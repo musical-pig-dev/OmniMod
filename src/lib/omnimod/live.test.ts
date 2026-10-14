@@ -4,6 +4,7 @@ import { liveHost, liveTransport, selectTransport, sleep } from "./live.ts";
 import type { PublishInput, Transport } from "./publish.ts";
 
 const file = new Blob([new Uint8Array([1, 2, 3])], { type: "application/zip" });
+const pack = new Blob(["icon.png README.md manifest.json"]);
 const quiet = async () => {};
 const input = (fields?: Record<string, string>, extra: Partial<PublishInput> = {}): PublishInput => ({
   fileName: "lanterns.zip",
@@ -99,6 +100,13 @@ describe("live transport", () => {
         return jsonResponse({ upload_url: "https://uploads.github.com/repos/a/b/releases/1/assets{?name,label}" });
       }
       if (target.includes("uploads.github.com")) return jsonResponse({ id: 3 }, 201);
+      if (target.includes("initiate-upload")) {
+        return jsonResponse({
+          user_media: { uuid: "up-1" },
+          upload_urls: [{ url: "https://files.example/ts1", part_number: 1, offset: 0, length: 99 }],
+        }, 201);
+      }
+      if (target.includes("files.example/ts1")) return new Response(null, { status: 200, headers: { etag: '"etag"' } });
       if (target.includes("thunderstore.io")) return new Response("", { status: 204 });
       return jsonResponse({ message: "no" }, 500);
     };
@@ -118,13 +126,15 @@ describe("live transport", () => {
     assert.ok(calls.some((call) => call.startsWith("GET https://api.modrinth.com/v2/project/lanterns")));
     assert.equal((await transport("github", input({ token: "gh", repo: "studio/mod" }))).ok, true);
     assert.equal((await transport("github", input({ repo: "studio/mod" }))).ok, true);
-    const thunder = await transport("thunderstore", input({ token: "tss", namespace: "Team" }));
+    const thunder = await transport(
+      "thunderstore",
+      input({ token: "tss", namespace: "Team", community: "riskofrain2" }, { file: pack }),
+    );
     assert.equal(thunder.ok && thunder.detail, "Team");
-    const unnamed = await transport("thunderstore", input({}));
+    const unnamed = await transport("thunderstore", input({ community: "riskofrain2" }, { file: pack }));
     assert.equal(unnamed.ok && unnamed.detail, "");
     assert.ok(forms.includes("file,metadata"));
     assert.ok(forms.includes("data,file"));
-    assert.ok(forms.includes("file"));
   });
 
   it("returns the host's reason when a call fails", async () => {
@@ -226,7 +236,10 @@ describe("live transport", () => {
     mode.value = "title";
     assert.match((await transport("curseforge", input({ token: "t", projectId: "1" }))).message ?? "", /Unprocessable/);
     mode.value = "message";
-    assert.match((await transport("thunderstore", input({ token: "t", namespace: "Team" }))).message ?? "", /game version/);
+    assert.match(
+      (await transport("thunderstore", input({ token: "t", namespace: "Team", community: "riskofrain2" }, { file: pack }))).message ?? "",
+      /game version/,
+    );
     mode.value = "error";
     assert.match((await transport("curseforge", input({ token: "t", projectId: "1" }))).message ?? "", /unauthorized/);
     mode.value = "cf";
@@ -258,8 +271,10 @@ describe("live transport", () => {
     mode.value = "nourl";
     assert.match((await transport("github", input({ token: "t", repo: "a/b" }))).message ?? "", /upload URL/);
     mode.value = "ts";
-    const quietResult = await transport("thunderstore", input({ token: "t" }));
-    assert.equal(quietResult.ok && quietResult.detail, "");
+    assert.match(
+      (await transport("thunderstore", input({ token: "t", community: "riskofrain2" }, { file: pack }))).message ?? "",
+      /upload slot/,
+    );
     mode.value = "textdata";
     assert.match((await transport("nexus", input({ apiKey: "k", modId: "1" }))).message ?? "", /upload slot/);
     mode.value = "slice";
@@ -317,5 +332,54 @@ describe("live transport", () => {
     assert.match(pack.message ?? "", /resourcepack/);
     assert.match((await transport("modrinth", input({ token: "mrp", project: "missing-id" }))).message ?? "", /no id/);
     assert.ok(agents.every((agent) => agent === "OmniMod/0.1"));
+  });
+
+  it("uploads a Thunderstore package in parts and refuses a zip that is not a package", async () => {
+    const puts: { url: string; auth: string | null; size: number }[] = [];
+    const bodies: string[] = [];
+    const fetchImpl: typeof fetch = async (url, init) => {
+      const target = String(url);
+      const headers = new Headers(init?.headers);
+      if (target.includes("initiate-upload")) {
+        return jsonResponse({
+          user_media: { uuid: "media-1" },
+          upload_urls: [
+            { url: "https://s3.example/a", part_number: 1, offset: 0, length: 4 },
+            { url: "https://s3.example/b", part_number: 2, offset: 4, length: 99 },
+          ],
+        }, 201);
+      }
+      if (target.includes("s3.example")) {
+        puts.push({
+          url: target,
+          auth: headers.get("authorization"),
+          size: init?.body instanceof Uint8Array ? init.body.byteLength : 0,
+        });
+        return new Response(null, { status: 200, headers: { etag: '"abc"' } });
+      }
+      if (init?.body) bodies.push(String(init.body));
+      if (target.includes("finish-upload")) return new Response("", { status: 204 });
+      if (target.includes("/submission/submit")) return jsonResponse({ package_version: "1" }, 201);
+      return jsonResponse({ message: "no" }, 500);
+    };
+    const transport = host(fetchImpl);
+    const refused = await transport("thunderstore", input({ token: "tss", namespace: "Team", community: "riskofrain2" }));
+    assert.match(refused.message ?? "", /icon\.png/);
+    const bytes = new Uint8Array([1, 2, 3, 4, 5, 6, 7]);
+    const archive = new Blob([bytes, new TextEncoder().encode("icon.png README.md manifest.json")]);
+    const sent = await transport(
+      "thunderstore",
+      input({ token: "tss", namespace: "Team", community: "lethal-company", categories: "items, skills" }, { file: archive }),
+    );
+    assert.equal(sent.ok && sent.detail, "Team");
+    assert.equal(puts.length, 2);
+    assert.equal(puts[0]?.auth, null);
+    assert.equal(puts[0]?.size, 4);
+    assert.equal(puts[1]?.size, archive.size - 4);
+    assert.match(bodies.find((body) => body.includes("ETag")) ?? "", /"ETag":"abc"/);
+    assert.match(bodies.find((body) => body.includes("author_name")) ?? "", /"author_name":"Team"/);
+    assert.match(bodies.find((body) => body.includes("author_name")) ?? "", /"lethal-company":\["items","skills"\]/);
+    const noCommunity = await transport("thunderstore", input({ token: "tss", namespace: "Team" }, { file: pack }));
+    assert.match(noCommunity.message ?? "", /community/);
   });
 });

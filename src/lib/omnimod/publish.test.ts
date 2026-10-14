@@ -16,7 +16,7 @@ function withReady(ids: PlatformId[]): ConfigMap {
     curseforge: { token: "t", projectId: "2" },
     modrinth: { token: "t", project: "slug", gameVersions: "1.20.1", loaders: "fabric" },
     github: { token: "t", repo: "a/b" },
-    thunderstore: { token: "t", namespace: "Team" },
+    thunderstore: { token: "t", namespace: "Team", community: "riskofrain2" },
     steam: { appId: "480", itemId: "9" },
   };
   for (const id of ids) {

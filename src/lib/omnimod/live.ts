@@ -285,15 +285,74 @@ async function publishThunderstore(
   input: PublishInput,
   fields: Record<string, string>,
 ): Promise<TransportResult> {
-  const body = new FormData();
-  body.set("file", input.file!, input.fileName);
-  const response = await fetchImpl("https://thunderstore.io/api/experimental/package/submit/", {
+  const file = input.file!;
+  const missing = await thunderstorePackage(file);
+  if (missing) return { ok: false, message: missing };
+  const token = (fields.token ?? "").trim();
+  const team = (fields.namespace ?? "").trim();
+  const community = (fields.community ?? "").trim();
+  if (!community) return { ok: false, message: "Thunderstore needs a community slug." };
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const started = await fetchImpl("https://thunderstore.io/api/experimental/usermedia/initiate-upload/", {
     method: "POST",
-    headers: { authorization: `Bearer ${(fields.token ?? "").trim()}` },
-    body,
+    headers: thunderstoreHeaders(token),
+    body: JSON.stringify({ filename: input.fileName || "package.zip", file_size_bytes: file.size }),
   });
-  if (!response.ok) return { ok: false, message: await errorText(response) };
-  return { ok: true, detail: (fields.namespace ?? "").trim() };
+  if (!started.ok) return { ok: false, message: await errorText(started) };
+  let session: { user_media?: { uuid?: string }; upload_urls?: Array<Record<string, unknown>> };
+  try {
+    session = (await started.json()) as typeof session;
+  } catch {
+    return { ok: false, message: "Thunderstore did not return an upload slot." };
+  }
+  const uuid = String(session.user_media?.uuid ?? "");
+  const parts = Array.isArray(session.upload_urls) ? session.upload_urls : [];
+  if (!uuid || parts.length === 0) return { ok: false, message: "Thunderstore did not return an upload slot." };
+  const completed: { PartNumber: number; ETag: string }[] = [];
+  for (const part of parts) {
+    const url = String(part.url ?? "");
+    const number = Number(part.part_number ?? part.PartNumber ?? 0);
+    const offset = Number(part.offset ?? 0);
+    const length = Number(part.length ?? bytes.length);
+    if (!url || !number) return { ok: false, message: "Thunderstore did not return an upload slot." };
+    const chunk = bytes.subarray(offset, Math.min(offset + length, bytes.length));
+    const put = await fetchImpl(url, { method: "PUT", body: chunk });
+    if (!put.ok) return { ok: false, message: await errorText(put) };
+    completed.push({ PartNumber: number, ETag: (put.headers.get("etag") ?? "").replace(/"/g, "") });
+  }
+  const finished = await fetchImpl(`https://thunderstore.io/api/experimental/usermedia/${uuid}/finish-upload/`, {
+    method: "POST",
+    headers: thunderstoreHeaders(token),
+    body: JSON.stringify({ parts: completed }),
+  });
+  if (!finished.ok) return { ok: false, message: await errorText(finished) };
+  const categories = splitList(fields.categories);
+  const submitted = await fetchImpl("https://thunderstore.io/api/experimental/submission/submit/", {
+    method: "POST",
+    headers: thunderstoreHeaders(token),
+    body: JSON.stringify({
+      upload_uuid: uuid,
+      author_name: team,
+      communities: [community],
+      community_categories: { [community]: categories },
+      has_nsfw_content: false,
+    }),
+  });
+  if (!submitted.ok) return { ok: false, message: await errorText(submitted) };
+  return { ok: true, detail: team };
+}
+
+const THUNDERSTORE_ROOT = ["icon.png", "README.md", "manifest.json"];
+
+async function thunderstorePackage(file: Blob): Promise<string | null> {
+  const text = new TextDecoder("latin1").decode(new Uint8Array(await file.arrayBuffer()));
+  const missing = THUNDERSTORE_ROOT.filter((name) => !text.includes(name));
+  if (missing.length === 0) return null;
+  return `Thunderstore package needs ${missing.join(", ")} at the zip root.`;
+}
+
+function thunderstoreHeaders(token: string): Record<string, string> {
+  return { authorization: `Bearer ${token}`, accept: "application/json", "content-type": "application/json" };
 }
 
 function dataOf(value: unknown): Record<string, unknown> {

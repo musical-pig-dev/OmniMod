@@ -153,6 +153,7 @@ const PRACTICE: Record<string, string> = {
   loaders: "fabric",
   repo: "studio/weathered-lanterns",
   namespace: "Studio",
+  community: "riskofrain2",
   appId: "480",
   itemId: "2904410021",
 };

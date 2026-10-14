@@ -77,12 +77,13 @@ export const PLATFORMS: Platform[] = [
   {
     id: "thunderstore",
     name: "Thunderstore",
-    summary: "Package submit. A service-account token and the team namespace.",
+    summary: "Upload API. A service-account token, the team, and the community the package is listed in.",
     tokenUrl: "https://thunderstore.io/",
     tokenLabel: "Open Thunderstore",
     fields: [
       { key: "token", label: "Service token", secret: true, placeholder: "tss_…" },
       { key: "namespace", label: "Team namespace", placeholder: "MyTeam" },
+      { key: "community", label: "Community", placeholder: "riskofrain2" },
     ],
   },
   {
