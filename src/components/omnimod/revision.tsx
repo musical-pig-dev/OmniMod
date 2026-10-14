@@ -10,13 +10,18 @@ export function RevisionLink({
   const label = revisionLabel(sha);
   const href = revisionHref(sha, repository);
   const className =
-    "fixed right-3 bottom-3 z-20 rounded-full border border-line bg-panel px-3 py-1 font-mono text-xs text-mist hover:text-ivory";
-  if (!href) {
-    return <span className={className}>{label}</span>;
-  }
-  return (
+    "rounded-full border border-line bg-panel px-3 py-1 font-mono text-xs text-mist hover:text-ivory";
+  const hash = href ? (
     <a className={className} href={href} target="_blank" rel="noreferrer" title={sha}>
       {label}
     </a>
+  ) : (
+    <span className={className}>{label}</span>
+  );
+  return (
+    <div className="fixed right-3 bottom-3 z-20 flex items-center gap-3">
+      <p className="text-xs text-mist">© 2026 Musical Pig LLC</p>
+      {hash}
+    </div>
   );
 }

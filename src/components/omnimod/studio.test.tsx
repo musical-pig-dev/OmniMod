@@ -34,6 +34,17 @@ describe("Studio", () => {
   it("shows a local revision until a pipeline hash is baked in", () => {
     render(<Studio transport={ok} />);
     expect(screen.getByText("local").tagName).toBe("SPAN");
+    expect(screen.getByText("© 2026 Musical Pig LLC")).toBeTruthy();
+  });
+
+  it("keeps the line behind the arrow until it is opened", async () => {
+    const user = userEvent.setup();
+    render(<Studio transport={ok} />);
+    const arrow = screen.getByRole("button", { name: "Show the line" });
+    expect(arrow.getAttribute("aria-expanded")).toBe("false");
+    await user.click(arrow);
+    expect(screen.getByRole("button", { name: "Hide the line" }).getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("One archive, published to every host that is ready.")).toBeTruthy();
   });
 
   it("publishes a package, clears the draft, and blocks the same version", async () => {

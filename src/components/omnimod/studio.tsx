@@ -2,7 +2,9 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   Check,
   ChevronDown,
+  ChevronRight,
   ExternalLink,
+  Gamepad2,
   KeyRound,
   Lock,
   LockOpen,
@@ -56,9 +58,9 @@ function Mark() {
   return (
     <span
       aria-hidden="true"
-      className="grid size-10 place-items-center rounded-full border border-brass text-brass"
+      className="grid size-10 shrink-0 place-items-center rounded-full border border-brass text-brass"
     >
-      <span className="size-4 rounded-full border-2 border-current" />
+      <Gamepad2 className="size-5" strokeWidth={1.75} />
     </span>
   );
 }
@@ -277,6 +279,7 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
   const [fileError, setFileError] = useState<string | null>(null);
   const [openId, setOpenId] = useState<PlatformId | null>(null);
   const [hostsOpen, setHostsOpen] = useState(false);
+  const [lineOpen, setLineOpen] = useState(false);
   const [running, setRunning] = useState(false);
   const [results, setResults] = useState<SiteResult[] | null>(null);
   const [progress, setProgress] = useState<PublishProgress | null>(null);
@@ -401,15 +404,33 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
   return (
     <div className="min-h-screen overflow-x-hidden bg-ink text-ivory">
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-8 px-4 py-6 sm:px-6 sm:py-10">
-        <header className="flex flex-wrap items-end justify-between gap-4 border-b border-line pb-6">
-          <div className="flex items-center gap-3">
+        <header className="flex flex-wrap items-center justify-between gap-4 border-b border-line pb-6">
+          <div className="flex min-w-0 items-center gap-3">
             <Mark />
-            <div>
-              <p className="font-display text-3xl leading-none tracking-tight">OmniMod</p>
-              <p className="mt-2 max-w-md text-sm leading-relaxed text-mist">
-                One archive, published to every host that is ready.
-              </p>
-            </div>
+            <p className="font-display text-3xl leading-none tracking-tight">OmniMod</p>
+            <button
+              type="button"
+              aria-expanded={lineOpen}
+              aria-label={lineOpen ? "Hide the line" : "Show the line"}
+              onClick={() => setLineOpen((open) => !open)}
+              className="inline-flex min-h-11 items-center text-brass"
+            >
+              <span
+                className={`grid transition-[grid-template-columns,opacity] duration-500 ease-out ${
+                  lineOpen ? "grid-cols-[1fr] opacity-100" : "grid-cols-[0fr] opacity-0"
+                }`}
+              >
+                <span className="overflow-hidden">
+                  <span className="block whitespace-nowrap pr-2 pl-3 text-sm text-mist">
+                    One archive, published to every host that is ready.
+                  </span>
+                </span>
+              </span>
+              <ChevronRight
+                className={`size-5 shrink-0 transition-transform duration-500 ${lineOpen ? "translate-x-0.5" : ""}`}
+                aria-hidden="true"
+              />
+            </button>
           </div>
           <button
             type="button"

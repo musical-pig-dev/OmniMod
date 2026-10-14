@@ -7,6 +7,7 @@ describe("RevisionLink", () => {
     render(<RevisionLink sha="abcdef1234567890" repository="musical-pig/OmniMod" />);
     const link = screen.getByRole("link", { name: "abcdef1" });
     expect(link.getAttribute("href")).toBe("https://github.com/musical-pig/OmniMod/commit/abcdef1234567890");
+    expect(screen.getByText("© 2026 Musical Pig LLC")).toBeTruthy();
   });
 
   it("stays plain text for a local build", () => {
