@@ -1,266 +1,332 @@
-import type { PlatformId } from "./catalog.ts";
-import type { PublishInput, Transport, TransportResult } from "./publish.ts";
-import { studioTransport } from "./storage.ts";
+/**
+ * Live host transport. Called only when the extension is built (not the Vite preview).
+ * Keys stay on the machine. Each host is called with the fields the user saved under Hosts.
+ */
+
+export type PublishFields = Record<string, string>;
+
+export type PublishInput = {
+  id: string;
+  name?: string;
+  version: string;
+  changelog?: string;
+  file?: File | null;
+  fileName?: string;
+  fields: PublishFields;
+};
+
+export type PublishResult = {
+  ok: boolean;
+  message: string;
+  detail?: string;
+};
+
+export type Transport = {
+  publish: (input: PublishInput) => Promise<PublishResult>;
+};
 
 const NEXUS = "https://api.nexusmods.com/v3";
-const NEXUS_SINGLE_PART = 100 * 1024 * 1024;
-const NEXUS_POLLS = 8;
-const NEXUS_POLL_MS = 1500;
+const CURSE = "https://api.curseforge.com";
+const MODRINTH = "https://api.modrinth.com/v2";
+const GITHUB = "https://api.github.com";
+const THUNDER = "https://thunderstore.io";
 
-export function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export function selectTransport(override?: Transport, dev = import.meta.env.DEV): Transport {
-  if (override) return override;
-  return dev ? studioTransport() : liveTransport();
-}
-
-export function liveTransport(fetchImpl: typeof fetch = fetch, pause: (ms: number) => Promise<void> = sleep): Transport {
-  return async (id, input) => {
-    if (id === "steam") {
-      return { ok: false, message: "Steam Workshop has no browser upload API. Use SteamCMD." };
-    }
-    if (!input.file) return { ok: false, message: "Choose the package again. It is only kept until you publish." };
-    const fields = input.fields ?? {};
-    if (id === "nexus") return publishNexus(fetchImpl, input, fields, pause);
-    if (id === "curseforge") return publishCurseForge(fetchImpl, input, fields);
-    if (id === "modrinth") return publishModrinth(fetchImpl, input, fields);
-    if (id === "github") return publishGitHub(fetchImpl, input, fields);
-    return publishThunderstore(fetchImpl, input, fields);
-  };
-}
-
-async function publishNexus(
-  fetchImpl: typeof fetch,
-  input: PublishInput,
-  fields: Record<string, string>,
-  pause: (ms: number) => Promise<void>,
-): Promise<TransportResult> {
-  const file = input.file!;
-  if (file.size > NEXUS_SINGLE_PART) {
-    return { ok: false, message: "Nexus single-part upload stops at 100 MiB." };
+function dataOf(body: unknown): unknown {
+  if (body && typeof body === "object" && "data" in body) {
+    return (body as { data: unknown }).data;
   }
-  const filename = safeNexusName(input.fileName);
-  const created = await fetchImpl(`${NEXUS}/uploads`, {
+  return body;
+}
+
+function errorText(body: unknown, fallback: string): string {
+  if (!body || typeof body !== "object") return fallback;
+  const b = body as Record<string, unknown>;
+  const pick = b.description ?? b.detail ?? b.title ?? b.message ?? b.error ?? b.errorMessage;
+  if (typeof pick === "string" && pick.trim()) return pick;
+  if (pick != null && typeof pick !== "object") return String(pick);
+  try {
+    return JSON.stringify(body).slice(0, 400);
+  } catch {
+    return fallback;
+  }
+}
+
+async function readJson(res: Response): Promise<unknown> {
+  const text = await res.text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+/** Nexus single-part: create session, PUT with exact Content-Disposition, finalise, poll, create file. */
+async function publishNexus(input: PublishInput): Promise<PublishResult> {
+  const apiKey = input.fields.apiKey?.trim();
+  const modId = input.fields.modId?.trim();
+  const file = input.file;
+  if (!apiKey || !modId) return { ok: false, message: "Nexus needs an API key and mod ID." };
+  if (!file) return { ok: false, message: "Nexus needs the package file." };
+
+  const filename = file.name || input.fileName || "package.zip";
+  const headers: Record<string, string> = {
+    apikey: apiKey,
+    Accept: "application/json",
+    "Content-Type": "application/json",
+  };
+
+  const create = await fetch(`${NEXUS}/uploads`, {
     method: "POST",
-    headers: { ...nexusHeaders(fields.apiKey ?? ""), "content-type": "application/json" },
-    body: JSON.stringify({ size_bytes: file.size, filename }),
-  });
-  if (!created.ok) return { ok: false, message: await errorText(created) };
-  const session = dataOf(await created.json());
-  const uploadId = String(session.id ?? "");
-  const target = String(session.presigned_url ?? "");
-  if (!uploadId || !target) return { ok: false, message: "Nexus did not return an upload slot." };
-  const put = await fetchImpl(target, {
-    method: "PUT",
-    headers: { "content-disposition": `attachment; filename="${filename}"` },
-    body: file,
-  });
-  if (!put.ok) return { ok: false, message: await errorText(put) };
-  const finalised = await fetchImpl(`${NEXUS}/uploads/${uploadId}/finalise`, {
-    method: "POST",
-    headers: nexusHeaders(fields.apiKey ?? ""),
-  });
-  if (!finalised.ok) return { ok: false, message: await errorText(finalised) };
-  const ready = await waitForNexus(fetchImpl, uploadId, fields.apiKey ?? "", pause);
-  if (!ready.ok) return ready;
-  const published = await fetchImpl(`${NEXUS}/mod-files`, {
-    method: "POST",
-    headers: { ...nexusHeaders(fields.apiKey ?? ""), "content-type": "application/json" },
+    headers,
     body: JSON.stringify({
-      upload_id: uploadId,
-      mod_id: (fields.modId ?? "").trim(),
-      name: filename,
-      version: input.version.trim(),
-      description: input.changelog.trim(),
-      file_category: "main",
-      update_mod_version: true,
+      filename,
+      size_bytes: file.size,
     }),
   });
-  if (!published.ok) return { ok: false, message: await errorText(published) };
-  return { ok: true };
-}
-
-async function waitForNexus(
-  fetchImpl: typeof fetch,
-  id: string,
-  apiKey: string,
-  pause: (ms: number) => Promise<void>,
-): Promise<TransportResult> {
-  for (let attempt = 0; attempt < NEXUS_POLLS; attempt += 1) {
-    const response = await fetchImpl(`${NEXUS}/uploads/${id}`, { headers: nexusHeaders(apiKey) });
-    if (!response.ok) return { ok: false, message: await errorText(response) };
-    const state = String(dataOf(await response.json()).state ?? "");
-    if (state === "available") return { ok: true };
-    if (attempt < NEXUS_POLLS - 1) await pause(NEXUS_POLL_MS);
+  const created = await readJson(create);
+  if (!create.ok) {
+    return { ok: false, message: errorText(created, `Nexus create upload failed (${create.status})`) };
   }
-  return { ok: false, message: "Nexus has not finished processing the upload." };
+  const session = dataOf(created) as { id?: string; presigned_url?: string } | null;
+  const uploadId = session?.id;
+  const presigned = session?.presigned_url;
+  if (!uploadId || !presigned) {
+    return { ok: false, message: "Nexus did not return an upload id or presigned URL." };
+  }
+
+  // Signed header is Content-Disposition only. Do not let the browser set Content-Type.
+  const blob = new Blob([await file.arrayBuffer()]);
+  const put = await fetch(presigned, {
+    method: "PUT",
+    headers: {
+      "Content-Disposition": `attachment; filename="${filename}"`,
+    },
+    body: blob,
+  });
+  if (!put.ok) {
+    const errBody = await put.text();
+    return {
+      ok: false,
+      message: `Nexus storage PUT failed (${put.status}).`,
+      detail: errBody.slice(0, 400),
+    };
+  }
+
+  const finalise = await fetch(`${NEXUS}/uploads/${uploadId}/finalise`, {
+    method: "POST",
+    headers,
+  });
+  const finalised = await readJson(finalise);
+  if (!finalise.ok) {
+    return { ok: false, message: errorText(finalised, `Nexus finalise failed (${finalise.status})`) };
+  }
+
+  let ready = false;
+  for (let i = 0; i < 8; i++) {
+    await sleep(1500);
+    const check = await fetch(`${NEXUS}/uploads/${uploadId}`, { headers });
+    const checked = await readJson(check);
+    if (!check.ok) continue;
+    const state = (dataOf(checked) as { state?: string } | null)?.state;
+    if (state === "available") {
+      ready = true;
+      break;
+    }
+  }
+  if (!ready) {
+    return { ok: false, message: "Nexus upload did not become available in time." };
+  }
+
+  const published = await fetch(`${NEXUS}/mod-files`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      upload_id: uploadId,
+      mod_id: modId,
+      name: filename.replace(/\.[^.]+$/, "") || filename,
+      version: input.version,
+      description: input.changelog || "",
+      file_category: "main",
+      allow_mod_manager_download: true,
+    }),
+  });
+  const pubBody = await readJson(published);
+  if (!published.ok) {
+    return { ok: false, message: errorText(pubBody, `Nexus publish failed (${published.status})`) };
+  }
+  return { ok: true, message: `Published to Nexus as ${input.version}.` };
 }
 
-function nexusHeaders(apiKey: string): Record<string, string> {
-  return { apikey: apiKey, authorization: `Bearer ${apiKey}`, accept: "application/json" };
-}
+async function publishCurseForge(input: PublishInput): Promise<PublishResult> {
+  const apiKey = input.fields.apiKey?.trim();
+  const projectId = input.fields.projectId?.trim();
+  const file = input.file;
+  if (!apiKey || !projectId) return { ok: false, message: "CurseForge needs an API key and project ID." };
+  if (!file) return { ok: false, message: "CurseForge needs the package file." };
 
-function safeNexusName(fileName: string): string {
-  const cleaned = fileName.replace(/[^a-zA-Z0-9 _'().-]+/g, " ").trim().slice(0, 50);
-  return cleaned || "package.zip";
-}
-
-async function publishCurseForge(
-  fetchImpl: typeof fetch,
-  input: PublishInput,
-  fields: Record<string, string>,
-): Promise<TransportResult> {
-  const body = new FormData();
-  body.set(
+  const form = new FormData();
+  form.append(
     "metadata",
     JSON.stringify({
-      changelog: input.changelog.trim(),
-      changelogType: "markdown",
-      displayName: input.fileName,
+      changelog: input.changelog || "",
+      changelogType: "text",
+      displayName: file.name,
+      gameVersions: [],
       releaseType: "release",
     }),
   );
-  body.set("file", input.file!, input.fileName);
-  const response = await fetchImpl(
-    `https://upload.curseforge.com/api/projects/${encodeURIComponent((fields.projectId ?? "").trim())}/upload-file`,
-    { method: "POST", headers: { "x-api-token": (fields.token ?? "").trim() }, body },
-  );
-  if (!response.ok) return { ok: false, message: await errorText(response) };
-  return { ok: true };
+  form.append("file", file, file.name);
+
+  const res = await fetch(`${CURSE}/v1/projects/${projectId}/upload-file`, {
+    method: "POST",
+    headers: { "X-Api-Key": apiKey, Accept: "application/json" },
+    body: form,
+  });
+  const body = await readJson(res);
+  if (!res.ok) return { ok: false, message: errorText(body, `CurseForge failed (${res.status})`) };
+  return { ok: true, message: `Published to CurseForge as ${input.version}.` };
 }
 
-async function publishModrinth(
-  fetchImpl: typeof fetch,
-  input: PublishInput,
-  fields: Record<string, string>,
-): Promise<TransportResult> {
-  const body = new FormData();
-  body.set(
+async function publishModrinth(input: PublishInput): Promise<PublishResult> {
+  const token = input.fields.token?.trim();
+  const projectId = input.fields.projectId?.trim();
+  const file = input.file;
+  if (!token || !projectId) return { ok: false, message: "Modrinth needs a token and project ID." };
+  if (!file) return { ok: false, message: "Modrinth needs the package file." };
+
+  const form = new FormData();
+  form.append(
     "data",
     JSON.stringify({
-      name: input.version.trim(),
-      version_number: input.version.trim(),
-      changelog: input.changelog.trim(),
+      name: input.version,
+      version_number: input.version,
+      changelog: input.changelog || "",
       dependencies: [],
       game_versions: [],
       version_type: "release",
       loaders: [],
       featured: false,
-      status: "listed",
-      project_id: (fields.project ?? "").trim(),
+      project_id: projectId,
       file_parts: ["file"],
-      primary_file: "file",
     }),
   );
-  body.set("file", input.file!, input.fileName);
-  const response = await fetchImpl("https://api.modrinth.com/v2/version", {
+  form.append("file", file, file.name);
+
+  const res = await fetch(`${MODRINTH}/version`, {
     method: "POST",
-    headers: { authorization: (fields.token ?? "").trim() },
-    body,
+    headers: { Authorization: token, Accept: "application/json" },
+    body: form,
   });
-  if (!response.ok) return { ok: false, message: await errorText(response) };
-  return { ok: true };
+  const body = await readJson(res);
+  if (!res.ok) return { ok: false, message: errorText(body, `Modrinth failed (${res.status})`) };
+  return { ok: true, message: `Published to Modrinth as ${input.version}.` };
 }
 
-async function publishGitHub(
-  fetchImpl: typeof fetch,
-  input: PublishInput,
-  fields: Record<string, string>,
-): Promise<TransportResult> {
-  const repo = (fields.repo ?? "").trim();
-  if (!/^[^/\s]+\/[^/\s]+$/.test(repo)) return { ok: false, message: "Repository must look like owner/name." };
-  const token = (fields.token ?? "").trim();
-  const created = await fetchImpl(`https://api.github.com/repos/${repo}/releases`, {
+async function publishGitHub(input: PublishInput): Promise<PublishResult> {
+  const token = input.fields.token?.trim();
+  const repo = input.fields.repo?.trim();
+  const file = input.file;
+  if (!token || !repo) return { ok: false, message: "GitHub needs a token and repo (owner/name)." };
+  if (!file) return { ok: false, message: "GitHub needs the package file." };
+
+  const tag = input.version.startsWith("v") ? input.version : `v${input.version}`;
+  const release = await fetch(`${GITHUB}/repos/${repo}/releases`, {
     method: "POST",
     headers: {
-      authorization: `Bearer ${token}`,
-      accept: "application/vnd.github+json",
-      "content-type": "application/json",
+      Authorization: `Bearer ${token}`,
+      Accept: "application/vnd.github+json",
+      "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      tag_name: input.version.trim(),
-      name: input.version.trim(),
-      body: input.changelog.trim(),
+      tag_name: tag,
+      name: tag,
+      body: input.changelog || "",
+      draft: false,
+      prerelease: false,
     }),
   });
-  if (!created.ok) return { ok: false, message: await errorText(created) };
-  const release = (await created.json()) as { upload_url?: string };
-  const uploadUrl = String(release.upload_url ?? "").replace(
-    "{?name,label}",
-    `?name=${encodeURIComponent(input.fileName)}`,
-  );
+  const relBody = await readJson(release);
+  if (!release.ok) return { ok: false, message: errorText(relBody, `GitHub release failed (${release.status})`) };
+  const uploadUrl = (relBody as { upload_url?: string })?.upload_url;
   if (!uploadUrl) return { ok: false, message: "GitHub did not return an upload URL." };
-  const asset = await fetchImpl(uploadUrl, {
+
+  const assetUrl = uploadUrl.replace(/\{.*\}$/, "") + `?name=${encodeURIComponent(file.name)}`;
+  const blob = new Blob([await file.arrayBuffer()]);
+  const asset = await fetch(assetUrl, {
     method: "POST",
     headers: {
-      authorization: `Bearer ${token}`,
-      accept: "application/vnd.github+json",
-      "content-type": "application/octet-stream",
+      Authorization: `Bearer ${token}`,
+      Accept: "application/vnd.github+json",
+      "Content-Type": "application/octet-stream",
     },
-    body: input.file,
+    body: blob,
   });
-  if (!asset.ok) return { ok: false, message: await errorText(asset) };
-  return { ok: true };
-}
-
-async function publishThunderstore(
-  fetchImpl: typeof fetch,
-  input: PublishInput,
-  fields: Record<string, string>,
-): Promise<TransportResult> {
-  const body = new FormData();
-  body.set("file", input.file!, input.fileName);
-  const response = await fetchImpl("https://thunderstore.io/api/experimental/package/submit/", {
-    method: "POST",
-    headers: { authorization: `Bearer ${(fields.token ?? "").trim()}` },
-    body,
-  });
-  if (!response.ok) return { ok: false, message: await errorText(response) };
-  return { ok: true, detail: (fields.namespace ?? "").trim() };
-}
-
-function dataOf(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object") return {};
-  const record = value as Record<string, unknown>;
-  if (record.data && typeof record.data === "object") return record.data as Record<string, unknown>;
-  return record;
-}
-
-async function errorText(response: Response): Promise<string> {
-  const text = (await response.text()).trim();
-  if (!text) return `The host returned HTTP ${response.status}.`;
-  try {
-    const body = JSON.parse(text) as {
-      description?: string;
-      detail?: string;
-      title?: string;
-      message?: string;
-      error?: string;
-      errorMessage?: string;
-    };
-    if (!body || typeof body !== "object") return text.slice(0, 280);
-    return (
-      body.description ||
-      body.detail ||
-      body.title ||
-      body.message ||
-      body.error ||
-      body.errorMessage ||
-      text.slice(0, 280)
-    );
-  } catch {
-    return text.slice(0, 280);
+  if (!asset.ok) {
+    const err = await asset.text();
+    return { ok: false, message: `GitHub asset upload failed (${asset.status}).`, detail: err.slice(0, 400) };
   }
+  return { ok: true, message: `Published to GitHub as ${tag}.` };
 }
 
-export function liveHost(id: PlatformId): string {
-  if (id === "nexus") return NEXUS;
-  if (id === "curseforge") return "https://upload.curseforge.com";
-  if (id === "modrinth") return "https://api.modrinth.com";
-  if (id === "github") return "https://api.github.com";
-  return "https://thunderstore.io";
+async function publishThunderstore(input: PublishInput): Promise<PublishResult> {
+  const token = input.fields.token?.trim() || input.fields.apiKey?.trim();
+  const file = input.file;
+  if (!token) return { ok: false, message: "Thunderstore needs a token." };
+  if (!file) return { ok: false, message: "Thunderstore needs the package file." };
+
+  const form = new FormData();
+  form.append("file", file, file.name);
+  const res = await fetch(`${THUNDER}/api/experimental/package/submit/`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
+  });
+  const body = await readJson(res);
+  if (!res.ok) return { ok: false, message: errorText(body, `Thunderstore failed (${res.status})`) };
+  return { ok: true, message: `Published to Thunderstore as ${input.version}.` };
+}
+
+export const liveTransport: Transport = {
+  async publish(input) {
+    if (input.id === "steam") {
+      return {
+        ok: false,
+        message: "Steam Workshop cannot be published from the browser. Use SteamCMD.",
+      };
+    }
+    if (!input.file) {
+      return { ok: false, message: "No package file on this publish." };
+    }
+    switch (input.id) {
+      case "nexus":
+        return publishNexus(input);
+      case "curseforge":
+        return publishCurseForge(input);
+      case "modrinth":
+        return publishModrinth(input);
+      case "github":
+        return publishGitHub(input);
+      case "thunderstore":
+        return publishThunderstore(input);
+      default:
+        return { ok: false, message: `No live publisher for ${input.id}.` };
+    }
+  },
+};
+
+export function selectTransport(override: Transport | undefined, dev: boolean): Transport {
+  if (override) return override;
+  if (dev) {
+    return {
+      async publish() {
+        return { ok: true, message: "Rehearsal only." };
+      },
+    };
+  }
+  return liveTransport;
 }
