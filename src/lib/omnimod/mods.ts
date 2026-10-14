@@ -93,7 +93,7 @@ export function versionUsed(publishedVersions: string[] | undefined, version: st
 }
 
 export function nextFreeVersion(current: string, taken: readonly string[]): string {
-  const used = new Set(taken.map((tag) => tag.trim().replace(/^v/, "")));
+  const used = new Set(taken.map((tag) => tag.trim().replace(/^refs\/tags\//, "").replace(/^v/, "")));
   let version = current.trim();
   while (used.has(version)) {
     const next = nextPatch(version);

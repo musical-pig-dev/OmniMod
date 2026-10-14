@@ -67,7 +67,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           current=$(node -p "require('./browsers/chrome/public/manifest.json').version")
-          tags=$(gh release list --limit 200 --json tagName --jq '[.[].tagName] | join(" ")')
+          release_tags=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" --jq '.[].tag_name')
+          git_tags=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags" --jq '.[].ref')
+          tags=$(printf '%s\n%s\n' "$release_tags" "$git_tags" | tr '\n' ' ')
+          echo "Taken tags: ${tags:-none}"
           version=$(CURRENT="$current" TAGS="$tags" node --experimental-strip-types --input-type=module -e '
             import { nextFreeVersion } from "./src/lib/omnimod/mods.ts";
             const next = nextFreeVersion(process.env.CURRENT ?? "", (process.env.TAGS ?? "").split(/\s+/).filter(Boolean));
@@ -77,6 +80,7 @@ jobs:
             }
             process.stdout.write(next);
           ')
+          echo "Next version: $version"
           node -e '
             const fs = require("fs");
             const path = "browsers/chrome/public/manifest.json";
@@ -97,13 +101,46 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           version="${{ steps.version.outputs.version }}"
-          tag="v${version}"
-          notes="Chrome extension ${version}."
-          gh release create "$tag" omnimod-chrome.zip \
-            --target "$GITHUB_SHA" \
-            --title "OmniMod ${tag}" \
-            --notes "$notes" \
-            --latest
+          for attempt in 1 2 3 4 5 6 7 8; do
+            node -e '
+              const fs = require("fs");
+              const path = "dist/chrome/manifest.json";
+              const manifest = JSON.parse(fs.readFileSync(path, "utf8"));
+              manifest.version = process.argv[1];
+              fs.writeFileSync(path, JSON.stringify(manifest, null, 2) + "\n");
+            ' "$version"
+            (cd dist/chrome && rm -f ../../omnimod-chrome.zip && zip -r ../../omnimod-chrome.zip .)
+            tag="v${version}"
+            echo "Publishing ${tag}"
+            set +e
+            output=$(gh release create "$tag" omnimod-chrome.zip \
+              --target "$GITHUB_SHA" \
+              --title "OmniMod ${tag}" \
+              --notes "Chrome extension ${version}." \
+              --latest 2>&1)
+            status=$?
+            set -e
+            echo "$output"
+            if [ "$status" -eq 0 ]; then
+              exit 0
+            fi
+            if echo "$output" | grep -q "immutable release"; then
+              version=$(node --experimental-strip-types --input-type=module -e '
+                import { nextPatch } from "./src/lib/omnimod/mods.ts";
+                const next = nextPatch(process.argv[1]);
+                if (!next) process.exit(1);
+                process.stdout.write(next);
+              ' "$version")
+              echo "Tag was locked. Trying v${version}."
+              continue
+            fi
+            if echo "$output" | grep -q "creations being restricted"; then
+              echo "A repository ruleset is blocking new tags. Settings, Rules, Rulesets: allow GitHub Actions to create tags."
+              exit 1
+            fi
+            exit "$status"
+          done
+          exit 1
       - uses: actions/upload-artifact@v4
         if: always()
         with:
