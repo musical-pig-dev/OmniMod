@@ -52,6 +52,8 @@ jobs:
       needs.gate.result == 'success' &&
       (needs.gate.outputs.decision == 'build-extension' || needs.test.result == 'success')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -64,7 +66,23 @@ jobs:
           VITE_GIT_SHA: ${{ github.sha }}
           VITE_GITHUB_REPOSITORY: ${{ github.repository }}
         run: npm run build:chrome
+      - name: Pack the extension
+        run: (cd dist/chrome && zip -r ../../omnimod-chrome.zip .)
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(node -p "require('./browsers/chrome/public/manifest.json').version")
+          tag="v${version}"
+          notes="Chrome extension ${version} built from ${GITHUB_SHA}."
+          gh release delete "$tag" --yes --cleanup-tag || true
+          gh release create "$tag" omnimod-chrome.zip \
+            --target "$GITHUB_SHA" \
+            --title "OmniMod ${tag}" \
+            --notes "$notes" \
+            --latest
+
       - uses: actions/upload-artifact@v4
         with:
           name: omnimod-chrome
-          path: dist/chrome
+          path: omnimod-chrome.zip
