@@ -31,13 +31,13 @@ import {
   versionUsed,
   type ModRecord,
 } from "@/lib/omnimod/mods";
+import { selectTransport } from "@/lib/omnimod/live";
 import {
   ACTIVE_KEY,
   MODS_KEY,
   formatBytes,
   loadConfigs,
   loadLibrary,
-  studioTransport,
 } from "@/lib/omnimod/storage";
 import { VAULT_KEY, importRecoveryKey, openVault, seal, type VaultPayload } from "@/lib/omnimod/vault";
 import { RevisionLink } from "@/components/omnimod/revision";
@@ -259,8 +259,9 @@ export function Delivery({
   );
 }
 
-export function Studio({ transport = studioTransport() }: { transport?: Transport } = {}) {
+export function Studio({ transport }: { transport?: Transport } = {}) {
   const fileRef = useRef<HTMLInputElement>(null);
+  const packageFile = useRef<File | null>(null);
   const vaultKey = useRef<CryptoKey | null>(null);
   const [hydrated, setHydrated] = useState(false);
   const [vault, setVault] = useState<"off" | "locked" | "open">("off");
@@ -355,6 +356,8 @@ export function Studio({ transport = studioTransport() }: { transport?: Transpor
       return;
     }
     setFileError(null);
+    const chosen = files.find((file) => file.name === accepted.fileName) ?? files[0];
+    packageFile.current = chosen;
     patchMod(active.id, { fileName: accepted.fileName, version: accepted.version });
     setFileSize(accepted.size);
     setResults(null);
@@ -369,12 +372,14 @@ export function Studio({ transport = studioTransport() }: { transport?: Transpor
     try {
       const next = await runPublish({
         input,
+        file: packageFile.current,
         configs: hostConfigs,
-        transport,
+        transport: selectTransport(transport),
         onProgress: setProgress,
       });
       setResults(next);
       if (next.some((result) => result.status === "success")) {
+        packageFile.current = null;
         const recorded = recordPublish(active!, version, true);
         patchMod(active!.id, {
           fileName: recorded.fileName,

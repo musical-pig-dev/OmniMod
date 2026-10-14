@@ -169,10 +169,15 @@ describe("runPublish", () => {
     const configs = withReady(["steam", "github"]);
     configs.github.enabled = false;
     const progress: { current: string | null }[] = [];
+    const seen: PublishInput[] = [];
     const results = await runPublish({
-      input: { fileName: "pack.zip", version: "  ", changelog: "" },
+      input: { fileName: "pack.zip", version: "  ", changelog: "", file: new Blob(["from-input"]) },
       configs,
-      transport: async () => ({ ok: true, detail: "queued" }),
+      file: new Blob(["from-arg"]),
+      transport: async (_id, next) => {
+        seen.push(next);
+        return { ok: true, detail: "queued" };
+      },
       onProgress: (next) => progress.push({ current: next.current }),
     });
     assert.match(results.find((result) => result.id === "github")!.message, /turned off/);
@@ -180,7 +185,18 @@ describe("runPublish", () => {
     assert.match(results.find((result) => result.id === "steam")!.message, /unversioned/);
     assert.match(results.find((result) => result.id === "steam")!.message, /queued/);
     assert.match(results.find((result) => result.id === "steam")!.message, /No changelog/);
+    assert.equal(seen[0]?.file instanceof Blob, true);
     assert.ok(progress.length > 1);
+    const fromInput = await runPublish({
+      input: { fileName: "pack.zip", version: "1", changelog: "c", file: new Blob(["only-input"]) },
+      configs: withReady(["steam"]),
+      transport: async (_id, next) => {
+        assert.equal(next.file instanceof Blob, true);
+        return { ok: true };
+      },
+    });
+    assert.equal(fromInput[0]?.status, "skipped");
+    assert.equal(fromInput.find((result) => result.id === "steam")?.status, "success");
     const thrown = await runPublish({
       input,
       configs: withReady(["nexus"]),

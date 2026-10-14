@@ -8,5 +8,14 @@
   },
   "background": {
     "service_worker": "background.js"
-  }
+  },
+  "host_permissions": [
+    "https://api.nexusmods.com/*",
+    "https://upload.curseforge.com/*",
+    "https://api.modrinth.com/*",
+    "https://api.github.com/*",
+    "https://uploads.github.com/*",
+    "https://thunderstore.io/*",
+    "https://*/*"
+  ]
 }

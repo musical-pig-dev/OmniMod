@@ -10,6 +10,8 @@ export type PublishInput = {
   fileName: string;
   version: string;
   changelog: string;
+  file?: Blob | null;
+  fields?: Record<string, string>;
 };
 
 export type SiteStatus = "skipped" | "success" | "error";
@@ -76,6 +78,7 @@ export async function runPublish(args: {
   input: PublishInput;
   configs: ConfigMap;
   transport: Transport;
+  file?: Blob | null;
   onProgress?: (progress: PublishProgress) => void;
 }): Promise<SiteResult[]> {
   const plan = planPublish(args.configs, args.input);
@@ -101,7 +104,11 @@ export async function runPublish(args: {
 
     try {
       args.onProgress?.({ completed, total: queued.length, current: entry.id });
-      const response = await args.transport(entry.id, args.input);
+      const response = await args.transport(entry.id, {
+        ...args.input,
+        file: args.file ?? args.input.file ?? null,
+        fields: args.configs[entry.id].fields,
+      });
       if (response.ok) {
         const extra = response.detail ? ` ${response.detail}` : "";
         results.push({

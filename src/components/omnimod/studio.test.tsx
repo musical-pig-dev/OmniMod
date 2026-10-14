@@ -147,6 +147,8 @@ describe("Studio", () => {
     const zone = screen.getByRole("button", { name: /Drop files/ });
     fireEvent.drop(zone, { dataTransfer: { files: [huge] } });
     expect(screen.getByText("huge.zip is over the 500 MiB limit for the hosts on this mod.")).toBeTruthy();
+    fireEvent.drop(zone, { dataTransfer: { files: [zip("one.zip"), zip("two.zip")] } });
+    expect(screen.getByText("one.zip, two.zip")).toBeTruthy();
   });
 
   it("reads a version out of the file name and ignores an empty drop", async () => {
