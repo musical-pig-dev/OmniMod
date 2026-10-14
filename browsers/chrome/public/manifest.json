@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "OmniMod",
+  "version": "0.1.0",
+  "description": "Publish mods to multiple hosts from one form",
+  "action": {
+    "default_title": "OmniMod"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": ["storage"]
+}
