@@ -1,7 +1,7 @@
 import { defaultConfigs } from "./catalog.ts";
 import { hydrateMod, type ModRecord } from "./mods.ts";
 
-export const VAULT_KEY = "omnimod-vault-v2";
+export const VAULT_KEY = "omnimod-vault-v3";
 
 export type VaultPayload = { mods: ModRecord[]; activeId: string };
 

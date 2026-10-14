@@ -81,7 +81,7 @@ describe("storage", () => {
     const refused = studioResponse("nexus", { fileName: "a.zip", version: "0.0.0", changelog: "x" });
     assert.equal(refused.ok, false);
     const github = studioResponse("github", { fileName: "notes.txt", version: "1.0.0", changelog: "x" });
-    assert.equal(github.ok, false);
+    assert.equal(github.ok, true);
     const ok = studioResponse("steam", { fileName: "A.ZIP", version: "1.0.0", changelog: "x" });
     assert.equal(ok.ok, true);
     let waited = 0;

@@ -174,10 +174,17 @@ describe("Studio", () => {
     );
     expect(screen.getByText("2 remaining")).toBeTruthy();
     expect(screen.getByText("Packing")).toBeTruthy();
+    expect(screen.getByText("100%")).toBeTruthy();
     rerender(<Delivery fileName="pack.zip" progress={{ completed: 1, total: 2, current: "nexus" }} />);
     expect(screen.getByText("On the way to Nexus Mods")).toBeTruthy();
+    expect(screen.getByText("50%")).toBeTruthy();
+    rerender(<Delivery fileName="pack.zip" progress={{ completed: 2, total: 2, current: null }} />);
+    expect(screen.getByText("Delivered")).toBeTruthy();
+    expect(screen.getByText("2 of 2")).toBeTruthy();
+    expect(screen.queryByText("0%")).toBeNull();
     rerender(<Delivery fileName="" progress={{ completed: 0, total: 0, current: null }} />);
     expect(screen.getByText("0 remaining")).toBeTruthy();
+    expect(screen.getByText("0%")).toBeTruthy();
   });
 
   it("walks the host editor, library switch, and blocked publish labels", async () => {

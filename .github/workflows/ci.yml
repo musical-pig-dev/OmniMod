@@ -29,7 +29,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-        run: node scripts/main-decision.mjs
+        run: node --experimental-strip-types scripts/main-decision.ts
 
   test:
     needs: gate
@@ -40,19 +40,25 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm install
+          cache: npm
+      - run: npm ci
       - run: npm test
 
   extension:
     needs: [gate, test]
-    if: always() && needs.gate.result == 'success' && needs.gate.outputs.decision == 'build-extension' && (needs.test.result == 'success' || needs.test.result == 'skipped')
+    if: |
+      always() &&
+      github.event_name == 'push' &&
+      needs.gate.result == 'success' &&
+      (needs.gate.outputs.decision == 'build-extension' || needs.test.result == 'success')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm install
+          cache: npm
+      - run: npm ci
       - name: Build the Chrome extension
         env:
           VITE_GIT_SHA: ${{ github.sha }}

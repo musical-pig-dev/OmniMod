@@ -220,6 +220,7 @@ export function Delivery({
 }) {
   const remaining = Math.max(progress.total - progress.completed, 0);
   const pct = progress.total === 0 ? 0 : progress.completed / progress.total;
+  const left = progress.total === 0 ? 0 : Math.round((remaining / progress.total) * 100);
   const current = progress.current ? platformById(progress.current).name : null;
   const done = remaining === 0 && progress.total > 0;
   return (
@@ -249,11 +250,10 @@ export function Delivery({
         {done ? "Delivered" : `${remaining} remaining`}
       </p>
       <p className="mt-2 text-center text-sm text-mist">
-        {done
-          ? `${progress.completed} of ${progress.total}`
-          : current
-            ? `On the way to ${current}`
-            : "Packing"}
+        <span>
+          {done ? `${progress.completed} of ${progress.total}` : current ? `On the way to ${current}` : "Packing"}
+        </span>
+        {done ? null : <span className="text-brass"> {left}%</span>}
       </p>
     </div>
   );

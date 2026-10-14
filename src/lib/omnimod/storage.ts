@@ -9,8 +9,8 @@ import { hydrateMod, type ModRecord } from "./mods.ts";
 import type { PublishInput, Transport } from "./publish.ts";
 
 export const STORAGE_KEY = "omnimod-configs-v1";
-export const MODS_KEY = "omnimod-mods-v2";
-export const ACTIVE_KEY = "omnimod-active-mod-v2";
+export const MODS_KEY = "omnimod-mods-v3";
+export const ACTIVE_KEY = "omnimod-active-mod-v3";
 
 export function formatBytes(size: number): string {
   if (size < 1024) return `${size} B`;
@@ -86,9 +86,6 @@ export function studioTransport(delay: (id: string) => number = studioDelay, pau
 export function studioResponse(id: PlatformId, input: PublishInput): { ok: true } | { ok: false; message: string } {
   if (input.version.trim() === "0.0.0") {
     return { ok: false, message: "The host refused version 0.0.0." };
-  }
-  if (id === "github" && !input.fileName.toLowerCase().endsWith(".zip")) {
-    return { ok: false, message: "GitHub release asset must be a zip in this slice." };
   }
   platformById(id);
   return { ok: true };
