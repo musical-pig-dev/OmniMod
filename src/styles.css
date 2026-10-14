@@ -1,0 +1,54 @@
+@import "tailwindcss";
+@source ".";
+
+@theme {
+  --font-sans: "Outfit", system-ui, sans-serif;
+  --font-display: "Fraunces", Georgia, serif;
+  --color-ink: #101412;
+  --color-panel: #181d1b;
+  --color-raised: #212824;
+  --color-line: #2e3732;
+  --color-ivory: #efeae0;
+  --color-mist: #a39c90;
+  --color-brass: #d4a054;
+  --color-brass-ink: #1c150c;
+  --color-ok: #8fbf98;
+  --color-bad: #e08a78;
+  --radius-card: 1.25rem;
+}
+
+@layer base {
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+
+  html,
+  body {
+    background: var(--color-ink);
+    color: var(--color-ivory);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@keyframes parcel-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
+}
+
+.parcel-bob {
+  animation: parcel-bob 1.6s ease-in-out infinite;
+}

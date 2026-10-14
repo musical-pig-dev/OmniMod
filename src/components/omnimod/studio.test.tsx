@@ -1,0 +1,199 @@
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, describe, expect, it } from "vitest";
+import type { Transport } from "@/lib/omnimod/publish";
+import { Delivery, SiteCard, Studio } from "./studio";
+import { platformById } from "@/lib/omnimod/catalog";
+import { emptyConfig } from "@/lib/omnimod/catalog";
+
+const ok: Transport = async () => ({ ok: true });
+
+afterEach(() => {
+  cleanup();
+  localStorage.clear();
+});
+
+function zip(name: string, bytes = 12) {
+  return new File([new Uint8Array(bytes)], name, { type: "application/zip" });
+}
+
+describe("Studio", () => {
+  it("shows a local revision until a pipeline hash is baked in", () => {
+    render(<Studio transport={ok} />);
+    expect(screen.getByText("local").tagName).toBe("SPAN");
+  });
+
+  it("publishes a package, clears the draft, and blocks the same version", async () => {
+    const user = userEvent.setup();
+    render(<Studio transport={ok} />);
+    await user.click(screen.getByRole("button", { name: /Hosts/ }));
+    await user.click(screen.getByRole("button", { name: /Nexus Mods/ }));
+    await user.click(screen.getByRole("button", { name: "Use a practice key" }));
+    await user.click(screen.getByRole("button", { name: /Hosts/ }));
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    await user.upload(input, zip("lanterns.zip"));
+    expect(screen.getByText("12 B · tap to replace")).toBeTruthy();
+    await user.type(screen.getByRole("textbox", { name: "Version *" }), "1.4.2");
+    await user.type(screen.getByRole("textbox", { name: "Changelog *" }), "Softer glass.");
+    await user.click(screen.getByRole("button", { name: "Publish to 1 host" }));
+    expect(screen.getByText("Delivered")).toBeTruthy();
+    expect(screen.getByText("Sent")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /Hosts/ }));
+    expect(screen.getByText(/1 sent/)).toBeTruthy();
+    expect(screen.queryByText(/failed/)).toBeNull();
+    await user.click(screen.getByRole("button", { name: /Hosts/ }));
+    await user.click(screen.getByRole("button", { name: "Back to package" }));
+    expect(screen.getByRole("button", { name: "Add a package to publish" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "1" }));
+    expect(screen.getByText("1.4.2")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "1" }));
+    await user.upload(document.querySelector('input[type="file"]') as HTMLInputElement, zip("next.zip"));
+    await user.type(screen.getByRole("textbox", { name: "Version *" }), "1.4.2");
+    await user.type(screen.getByRole("textbox", { name: "Changelog *" }), "Again.");
+    expect(screen.getByRole("button", { name: "Version already published" })).toHaveProperty("disabled", true);
+  });
+
+  it("keeps the draft when the host refuses the version", async () => {
+    const user = userEvent.setup();
+    const refuse: Transport = async () => ({ ok: false, message: "The host refused version 0.0.0." });
+    render(<Studio transport={refuse} />);
+    await user.click(screen.getByRole("button", { name: /Hosts/ }));
+    await user.click(screen.getByRole("button", { name: /Modrinth/ }));
+    await user.click(screen.getByRole("button", { name: "Use a practice key" }));
+    await user.click(screen.getByRole("button", { name: /Hosts/ }));
+    await user.upload(document.querySelector('input[type="file"]') as HTMLInputElement, zip("notes.txt", 2048));
+    await user.type(screen.getByRole("textbox", { name: "Version *" }), "0.0.0");
+    await user.type(screen.getByRole("textbox", { name: "Changelog *" }), "nope");
+    await user.click(screen.getByRole("button", { name: /Publish to/ }));
+    expect(screen.getByText("Failed")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /Hosts/ }));
+    expect(screen.getByText(/1 failed/)).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /Hosts/ }));
+    await user.click(screen.getByRole("button", { name: "Back to package" }));
+    expect(screen.getByDisplayValue("0.0.0")).toBeTruthy();
+  });
+
+  it("names mods, rejects duplicates, and can remove every mod", async () => {
+    const user = userEvent.setup();
+    render(<Studio transport={ok} />);
+    const title = screen.getByRole("textbox", { name: "Mod name" });
+    await user.clear(title);
+    await user.type(title, "Lanterns");
+    await user.tab();
+    await user.click(screen.getByRole("button", { name: "1" }));
+    await user.click(screen.getByRole("button", { name: "Add a mod" }));
+    await user.type(screen.getByRole("textbox", { name: "New mod name" }), "lanterns");
+    expect(screen.getByText("Already used")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Add" })).toHaveProperty("disabled", true);
+    await user.clear(screen.getByRole("textbox", { name: "New mod name" }));
+    await user.type(screen.getByRole("textbox", { name: "New mod name" }), "Clock");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    await user.click(screen.getByRole("button", { name: "2" }));
+    await user.type(screen.getByRole("textbox", { name: "Find a mod" }), "missing");
+    expect(screen.getByText("No mods match.")).toBeTruthy();
+    await user.clear(screen.getByRole("textbox", { name: "Find a mod" }));
+    await user.click(screen.getByRole("button", { name: "Remove Lanterns" }));
+    await user.click(screen.getByRole("button", { name: "Remove Clock" }));
+    expect(screen.getByRole("heading", { name: "Mods" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /Hosts/ }));
+    expect(screen.getByText("Add a mod before saving host keys.")).toBeTruthy();
+  });
+
+  it("reads a version out of the file name and ignores an empty drop", async () => {
+    const user = userEvent.setup();
+    render(<Studio transport={ok} />);
+    const zone = screen.getByRole("button", { name: /Drop a zip/ });
+    fireEvent.dragOver(zone);
+    fireEvent.drop(zone, { dataTransfer: { files: [] } });
+    fireEvent.drop(zone, { dataTransfer: { files: [zip("pack-2.0.1.zip", 2 * 1024 * 1024)] } });
+    expect(screen.getByDisplayValue("2.0.1")).toBeTruthy();
+    fireEvent.drop(zone, { dataTransfer: { files: [zip("pack-9.9.9.zip")] } });
+    expect(screen.getByDisplayValue("2.0.1")).toBeTruthy();
+    expect(screen.queryByDisplayValue("9.9.9")).toBeNull();
+  });
+
+  it("draws the delivery states", () => {
+    const { rerender } = render(
+      <Delivery fileName="pack.zip" progress={{ completed: 0, total: 2, current: null }} />,
+    );
+    expect(screen.getByText("2 remaining")).toBeTruthy();
+    expect(screen.getByText("Packing")).toBeTruthy();
+    rerender(<Delivery fileName="pack.zip" progress={{ completed: 1, total: 2, current: "nexus" }} />);
+    expect(screen.getByText("On the way to Nexus Mods")).toBeTruthy();
+    rerender(<Delivery fileName="" progress={{ completed: 0, total: 0, current: null }} />);
+    expect(screen.getByText("0 remaining")).toBeTruthy();
+  });
+
+  it("walks the host editor, library switch, and blocked publish labels", async () => {
+    const user = userEvent.setup();
+    let release: (value: { ok: true }) => void = () => {};
+    const held: Transport = () =>
+      new Promise((resolve) => {
+        release = resolve;
+      });
+    render(<Studio transport={held} />);
+    fireEvent.click(screen.getByRole("button", { name: "Add a package to publish" }));
+    await user.click(screen.getByRole("button", { name: /Drop a zip/ }));
+    await user.upload(document.querySelector('input[type="file"]') as HTMLInputElement, zip("plain.zip"));
+    expect(screen.getByRole("button", { name: "Version and changelog needed" })).toBeTruthy();
+    await user.type(screen.getByRole("textbox", { name: "Version *" }), "3.0.0");
+    await user.type(screen.getByRole("textbox", { name: "Changelog *" }), "notes");
+    expect(screen.getByRole("button", { name: "Set up a host to publish" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /Hosts/ }));
+    await user.click(screen.getByRole("button", { name: /Nexus Mods/ }));
+    await user.type(screen.getByLabelText("API key"), "secret");
+    await user.click(screen.getByRole("button", { name: "Use a practice key" }));
+    await user.click(screen.getByRole("button", { name: /GitHub Releases/ }));
+    await user.click(screen.getByRole("button", { name: /GitHub Releases/ }));
+    await user.click(screen.getByRole("button", { name: /GitHub Releases/ }));
+    await user.click(screen.getByRole("button", { name: "Use a practice key" }));
+    await user.click(screen.getByRole("button", { name: /Hosts/ }));
+    await user.click(screen.getByRole("button", { name: "1" }));
+    await user.click(screen.getByRole("button", { name: "Add a mod" }));
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await user.click(screen.getByRole("button", { name: "Add a mod" }));
+    const form = screen.getByRole("textbox", { name: "New mod name" }).closest("form");
+    fireEvent.submit(form!);
+    await user.type(screen.getByRole("textbox", { name: "New mod name" }), "Second");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    await user.click(screen.getByRole("button", { name: "2" }));
+    const untitled = screen
+      .getAllByRole("button", { name: /Untitled mod/ })
+      .find((button) => button.getAttribute("aria-label") !== "Remove Untitled mod");
+    await user.click(untitled!);
+    expect(screen.getByText(/Saved name/)).toBeTruthy();
+    const title = screen.getByRole("textbox", { name: "Mod name" });
+    await user.clear(title);
+    await user.type(title, "Second");
+    expect(screen.getByText("Already used")).toBeTruthy();
+    fireEvent.blur(title);
+    await user.click(screen.getByRole("button", { name: /Hosts/ }));
+    await user.selectOptions(screen.getByRole("combobox", { name: "Mod" }), screen.getByRole("option", { name: "Second" }));
+    expect(screen.getByText(/Second ·/)).toBeTruthy();
+    await user.selectOptions(screen.getByRole("combobox", { name: "Mod" }), screen.getByRole("option", { name: "Untitled mod" }));
+    await user.click(screen.getByRole("button", { name: /Hosts/ }));
+    const publish = screen.getByRole("button", { name: /Publish to/ });
+    await user.click(publish);
+    expect(screen.queryByRole("button", { name: "Back to package" })).toBeNull();
+    expect(screen.getByText(/remaining/)).toBeTruthy();
+    release({ ok: true });
+    expect(await screen.findByText("On the way to GitHub Releases")).toBeTruthy();
+    release({ ok: true });
+    expect(await screen.findByRole("button", { name: "Back to package" })).toBeTruthy();
+  });
+
+  it("renders a host card without a token link", () => {
+    const platform = { ...platformById("steam"), tokenUrl: undefined, tokenLabel: undefined };
+    render(
+      <SiteCard
+        platform={platform}
+        config={emptyConfig()}
+        open
+        onToggleOpen={() => {}}
+        onChange={() => {}}
+      />,
+    );
+    expect(screen.queryByRole("link")).toBeNull();
+    expect(screen.getByText("Steam Workshop")).toBeTruthy();
+  });
+});

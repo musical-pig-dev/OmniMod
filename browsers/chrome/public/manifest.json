@@ -2,12 +2,11 @@
   "manifest_version": 3,
   "name": "OmniMod",
   "version": "0.1.0",
-  "description": "Publish mods to multiple hosts from one form",
+  "description": "Publish one mod package to every host that already has an account.",
   "action": {
-    "default_title": "OmniMod"
+    "default_title": "Open OmniMod"
   },
   "background": {
     "service_worker": "background.js"
-  },
-  "permissions": ["storage"]
+  }
 }
