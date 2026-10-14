@@ -1,12 +1,13 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it } from "vitest";
-import type { Transport } from "@/lib/omnimod/publish";
-import { Delivery, SiteCard, Studio } from "./studio";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { SiteResult, Transport } from "@/lib/omnimod/publish";
+import { Delivery, ResultSlip, SiteCard, Studio } from "./studio";
 import { platformById } from "@/lib/omnimod/catalog";
 import { emptyConfig } from "@/lib/omnimod/catalog";
 import { createMod } from "@/lib/omnimod/mods";
 import { MODS_KEY } from "@/lib/omnimod/storage";
+import * as vault from "@/lib/omnimod/vault";
 
 const ok: Transport = async () => ({ ok: true });
 
@@ -262,5 +263,62 @@ describe("Studio", () => {
     expect(screen.getByText("Steam Workshop")).toBeTruthy();
     expect(screen.getByText("One archive. No published size cap.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Clear" })).toHaveProperty("disabled", true);
+  });
+
+  it("names an unknown host and ignores an empty file choice", async () => {
+    const user = userEvent.setup();
+    const ghost = { id: "ghost", status: "skipped", message: "Left." } as SiteResult;
+    render(<ResultSlip result={ghost} index={0} />);
+    expect(screen.getByText("ghost")).toBeTruthy();
+    cleanup();
+    render(<Studio transport={ok} />);
+    await addMod(user, "Lanterns");
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { files: null } });
+    expect(screen.getByDisplayValue("0.0.1")).toBeTruthy();
+  });
+
+  it("stays locked when the vault record disappears", async () => {
+    const user = userEvent.setup();
+    const secret = vault.createRecoveryKey();
+    const key = await vault.importRecoveryKey(secret);
+    localStorage.setItem(vault.VAULT_KEY, await vault.seal(key!, { mods: [], activeId: "" }));
+    render(<Studio transport={ok} />);
+    expect(await screen.findByRole("heading", { name: "Keys are locked" })).toBeTruthy();
+    localStorage.removeItem(vault.VAULT_KEY);
+    await user.type(screen.getByLabelText("Key"), secret);
+    await user.click(screen.getByRole("button", { name: "Unlock" }));
+    expect(screen.getByRole("heading", { name: "Keys are locked" })).toBeTruthy();
+  });
+
+  it("does not lock when the recovery key cannot be imported", async () => {
+    const user = userEvent.setup();
+    const spy = vi.spyOn(vault, "importRecoveryKey").mockResolvedValueOnce(null);
+    render(<Studio transport={ok} />);
+    await user.click(screen.getByRole("button", { name: "Encrypt Keys" }));
+    await user.click(screen.getByRole("checkbox", { name: "I saved this recovery key" }));
+    await user.click(screen.getByRole("button", { name: "Protect" }));
+    expect(await screen.findByRole("heading", { name: "Encrypt keys" })).toBeTruthy();
+    spy.mockRestore();
+  });
+
+  it("drops a seal that finishes after the studio moves on", async () => {
+    const user = userEvent.setup();
+    let finish = (_value: string) => {};
+    const spy = vi.spyOn(vault, "seal").mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    render(<Studio transport={ok} />);
+    await user.click(screen.getByRole("button", { name: "Encrypt Keys" }));
+    await user.click(screen.getByRole("checkbox", { name: "I saved this recovery key" }));
+    await user.click(screen.getByRole("button", { name: "Protect" }));
+    expect(await screen.findByLabelText("Keys encrypted")).toBeTruthy();
+    cleanup();
+    finish("stale");
+    await Promise.resolve();
+    spy.mockRestore();
   });
 });

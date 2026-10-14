@@ -75,7 +75,7 @@ function CredentialMark({ saved }: { saved: boolean }) {
   );
 }
 
-function ResultSlip({ result, index }: { result: SiteResult; index: number }) {
+export function ResultSlip({ result, index }: { result: SiteResult; index: number }) {
   const name = PLATFORMS.find((platform) => platform.id === result.id)?.name ?? result.id;
   const sent = result.status === "success";
   const failed = result.status === "error";
@@ -348,7 +348,7 @@ export function Studio({ transport = studioTransport() }: { transport?: Transpor
 
   function onFile(list: FileList | File[] | undefined) {
     const files = list ? [...list] : [];
-    if (!files.length || !active) return;
+    if (!files.length) return;
     const accepted = acceptFiles(files, rule, active.version);
     if (!accepted.ok) {
       setFileError(accepted.message);

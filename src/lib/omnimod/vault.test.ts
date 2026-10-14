@@ -27,7 +27,13 @@ describe("vault", () => {
     const junk = await seal(key, { mods: "nope" } as never);
     assert.equal(await openVault(secret, junk), null);
     assert.equal(await importRecoveryKey("****"), null);
+    assert.equal(await importRecoveryKey("aaaa"), null);
     assert.equal(readPayload(null), null);
     assert.equal(readPayload({ mods: "nope" }), null);
+    assert.equal(readPayload({ mods: [] })?.activeId, "");
+    assert.equal(readPayload({ mods: [mod], activeId: mod.id })?.activeId, mod.id);
+    assert.equal(readPayload({ mods: [mod], activeId: 4 })?.activeId, mod.id);
+    assert.equal(await openVault(secret, JSON.stringify({ v: 1, data: "aa" })), null);
+    assert.equal(await openVault(secret, JSON.stringify({ v: 1, iv: "aa" })), null);
   });
 });
