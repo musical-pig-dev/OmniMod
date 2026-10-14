@@ -382,4 +382,100 @@ describe("live transport", () => {
     const noCommunity = await transport("thunderstore", input({ token: "tss", namespace: "Team" }, { file: pack }));
     assert.match(noCommunity.message ?? "", /community/);
   });
+
+  it("covers the remaining host branches", async () => {
+    const mode = { value: "modpack" };
+    const posted: string[] = [];
+    const fetchImpl: typeof fetch = async (url, init) => {
+      const target = String(url);
+      if (target.includes("api.modrinth.com/v2/project/")) {
+        return jsonResponse({ id: "ID000001", project_type: mode.value });
+      }
+      if (mode.value === "slot") return jsonResponse({ user_media: { uuid: "u" }, upload_urls: {} }, 201);
+      if (mode.value === "nouuid") return jsonResponse({ upload_urls: [] }, 201);
+      if (mode.value === "nourl") {
+        return jsonResponse({ user_media: { uuid: "u" }, upload_urls: [{ offset: 0 }] }, 201);
+      }
+      if (mode.value === "alt") {
+        if (target.includes("initiate-upload")) {
+          return jsonResponse(
+            { user_media: { uuid: "u" }, upload_urls: [{ url: "https://s3.example/c", PartNumber: 3 }] },
+            201,
+          );
+        }
+        return jsonResponse({ message: "no" }, 500);
+      }
+      if (mode.value === "put") {
+        if (target.includes("initiate-upload")) {
+          return jsonResponse(
+            { user_media: { uuid: "u" }, upload_urls: [{ url: "https://s3.example/d", part_number: 1, offset: 0, length: 2 }] },
+            201,
+          );
+        }
+        return jsonResponse({ message: "part failed" }, 403);
+      }
+      if (mode.value === "finish") {
+        if (target.includes("initiate-upload")) {
+          return jsonResponse(
+            { user_media: { uuid: "u" }, upload_urls: [{ url: "https://s3.example/e", part_number: 1 }] },
+            201,
+          );
+        }
+        if (target.includes("s3.example")) return new Response(null, { status: 200 });
+        return jsonResponse({ detail: "finish failed" }, 409);
+      }
+      if (mode.value === "submit") {
+        if (target.includes("initiate-upload")) {
+          return jsonResponse(
+            { user_media: { uuid: "u" }, upload_urls: [{ url: "https://s3.example/f", part_number: 1, offset: 0, length: 1 }] },
+            201,
+          );
+        }
+        if (target.includes("s3.example")) return new Response(null, { status: 200, headers: { etag: "bare" } });
+        if (target.includes("finish-upload")) {
+          posted.push(String(init?.body ?? ""));
+          return new Response("", { status: 204 });
+        }
+        return jsonResponse({ error: "rejected" }, 400);
+      }
+      if (mode.value === "name") {
+        posted.push(String(init?.body ?? ""));
+        return jsonResponse(
+          { user_media: { uuid: "u" }, upload_urls: [{ url: "https://s3.example/g", part_number: 1, offset: 0, length: 1 }] },
+          201,
+        );
+      }
+      return jsonResponse({ message: "no" }, 500);
+    };
+    const transport = host(fetchImpl);
+    const fields = { token: "mrp", project: "pack" };
+    assert.match((await transport("modrinth", input(fields, { fileName: "pack.zip" }))).message ?? "", /modpack/);
+    mode.value = "datapack";
+    assert.match((await transport("modrinth", input(fields, { fileName: "pack" }))).message ?? "", /datapack/);
+    mode.value = "shader";
+    assert.match((await transport("modrinth", input(fields, { fileName: "shade.jar" }))).message ?? "", /shader/);
+    mode.value = "mod";
+    assert.equal((await transport("modrinth", input(fields, { fileName: "ok.jar" }))).ok, false);
+    const ready = { token: "tss", namespace: "Team", community: "riskofrain2" };
+    mode.value = "slot";
+    assert.match((await transport("thunderstore", input(ready, { file: pack }))).message ?? "", /upload slot/);
+    mode.value = "nouuid";
+    assert.match((await transport("thunderstore", input(ready, { file: pack }))).message ?? "", /upload slot/);
+    mode.value = "nourl";
+    assert.match((await transport("thunderstore", input(ready, { file: pack }))).message ?? "", /upload slot/);
+    mode.value = "alt";
+    assert.match((await transport("thunderstore", input(ready, { file: pack }))).message ?? "", /part failed|finish failed|rejected|no/);
+    mode.value = "put";
+    assert.match((await transport("thunderstore", input(ready, { file: pack }))).message ?? "", /part failed/);
+    mode.value = "finish";
+    assert.match((await transport("thunderstore", input(ready, { file: pack }))).message ?? "", /finish failed/);
+    mode.value = "submit";
+    assert.match((await transport("thunderstore", input(ready, { file: pack }))).message ?? "", /rejected/);
+    assert.match(posted[0] ?? "", /"ETag":"bare"/);
+    mode.value = "name";
+    await transport("thunderstore", input(ready, { file: pack, fileName: "" }));
+    assert.match(posted.find((body) => body.includes("filename")) ?? "", /package\.zip/);
+    const partial = new Blob(["icon.png README.md"]);
+    assert.match((await transport("thunderstore", input(ready, { file: partial }))).message ?? "", /manifest\.json/);
+  });
 });
