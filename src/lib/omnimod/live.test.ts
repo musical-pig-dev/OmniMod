@@ -14,8 +14,21 @@ const input = (fields?: Record<string, string>, extra: Partial<PublishInput> = {
   ...extra,
 });
 
-function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+function jsonResponse(body: unknown, status = 200, extra: Record<string, string> = {}): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...extra } });
+}
+
+function partResponse(): Response {
+  return new Response(null, { status: 200, headers: { etag: '"abc"' } });
+}
+
+function multipartBody(id = "up-1", partSize = 2): Record<string, unknown> {
+  return {
+    id,
+    part_presigned_urls: ["https://files.example/p1", "https://files.example/p2"],
+    part_size_bytes: partSize,
+    complete_presigned_url: "https://files.example/complete",
+  };
 }
 
 function host(fetchImpl: typeof fetch) {
@@ -59,10 +72,11 @@ describe("live transport", () => {
       const target = String(url);
       calls.push(`${init?.method ?? "GET"} ${target}`);
       if (init?.body instanceof FormData) forms.push([...init.body.keys()].sort().join(","));
-      if (target.endsWith("/uploads") && init?.method === "POST") {
-        return jsonResponse({ data: { id: "up-1", presigned_url: "https://files.example/put" } });
+      if (target.endsWith("/uploads/multipart") && init?.method === "POST") {
+        return jsonResponse({ data: multipartBody() });
       }
-      if (target === "https://files.example/put") return new Response(null, { status: 200 });
+      if (target.includes("files.example/p")) return partResponse();
+      if (target.endsWith("/complete")) return new Response(null, { status: 200 });
       if (target.endsWith("/finalise")) return jsonResponse({ data: { state: "processing" } });
       if (target.endsWith("/uploads/up-1") && (init?.method ?? "GET") === "GET") {
         return jsonResponse({
@@ -109,34 +123,50 @@ describe("live transport", () => {
       if (mode.value === "error") return jsonResponse({ error: "unauthorized" }, 401);
       if (mode.value === "cf") return jsonResponse({ errorMessage: "versions required" }, 400);
       if (mode.value === "slot") return jsonResponse({ data: {} });
-      if (mode.value === "notarget") return jsonResponse({ data: { id: "up" } });
+      if (mode.value === "notarget") return jsonResponse({ data: { id: "up", part_presigned_urls: [] } });
+      if (mode.value === "nocomplete") {
+        return jsonResponse({ data: { id: "up", part_presigned_urls: ["https://files.example/p1"] } });
+      }
       if (mode.value === "num") return new Response("1", { status: 201, headers: { "content-type": "application/json" } });
       if (mode.value === "put") {
-        if (target.endsWith("/uploads") && init?.method === "POST") {
-          return jsonResponse({ data: { id: "up", presigned_url: "https://files.example/put" } });
+        if (target.endsWith("/uploads/multipart") && init?.method === "POST") {
+          return jsonResponse({ data: multipartBody("up") });
         }
         return new Response(JSON.stringify({ description: "signature" }), { status: 403 });
       }
       if (mode.value === "final") {
-        if (target.endsWith("/uploads") && init?.method === "POST") {
-          return jsonResponse({ data: { id: "up", presigned_url: "https://files.example/put" } });
+        if (target.endsWith("/uploads/multipart") && init?.method === "POST") {
+          return jsonResponse({ data: multipartBody("up") });
         }
-        if (target.includes("files.example")) return new Response(null, { status: 200 });
+        if (target.includes("files.example")) return partResponse();
+        return jsonResponse({ error: "closed" }, 409);
+      }
+      if (mode.value === "xml") {
+        if (target.endsWith("/uploads/multipart") && init?.method === "POST") {
+          return jsonResponse({
+            data: { ...multipartBody("up"), complete_presigned_url: "https://complete.example" },
+          });
+        }
+        if (target.includes("files.example/p")) return partResponse();
         return jsonResponse({ error: "closed" }, 409);
       }
       if (mode.value === "wait") {
-        if (target.endsWith("/uploads") && init?.method === "POST") {
-          return jsonResponse({ id: "up", presigned_url: "https://files.example/put" });
+        if (target.endsWith("/uploads/multipart") && init?.method === "POST") {
+          return jsonResponse({
+            id: "up",
+            part_presigned_urls: ["https://files.example/p1"],
+            complete_presigned_url: "https://files.example/complete",
+          });
         }
         if (target.includes("files.example")) return new Response(null, { status: 200 });
         if (target.endsWith("/finalise")) return jsonResponse({ state: "processing" });
         return jsonResponse({ message: "still working" }, 503);
       }
       if (mode.value === "stuck") {
-        if (target.endsWith("/uploads") && init?.method === "POST") {
-          return jsonResponse({ data: { id: "up", presigned_url: "https://files.example/put" } });
+        if (target.endsWith("/uploads/multipart") && init?.method === "POST") {
+          return jsonResponse({ data: multipartBody("up", 0) });
         }
-        if (target.includes("files.example")) return new Response(null, { status: 200 });
+        if (target.includes("files.example")) return partResponse();
         if (target.endsWith("/finalise")) return jsonResponse({ data: { state: "processing" } });
         mode.polls += 1;
         if (mode.polls === 1) return jsonResponse({ data: {} });
@@ -149,10 +179,10 @@ describe("live transport", () => {
         return jsonResponse({ message: "asset rejected" }, 422);
       }
       if (mode.value === "publish") {
-        if (target.endsWith("/uploads") && init?.method === "POST") {
-          return jsonResponse({ data: { id: "up", presigned_url: "https://files.example/put" } });
+        if (target.endsWith("/uploads/multipart") && init?.method === "POST") {
+          return jsonResponse({ data: multipartBody("up") });
         }
-        if (target.includes("files.example")) return new Response(null, { status: 200 });
+        if (target.includes("files.example")) return partResponse();
         if (target.endsWith("/finalise")) return jsonResponse({ data: { state: "processing" } });
         if (target.endsWith("/uploads/up")) return jsonResponse({ data: { state: "available" } });
         return jsonResponse({ message: "mod id is not a uuid" }, 422);
@@ -167,9 +197,6 @@ describe("live transport", () => {
       return new Response("  ", { status: 400 });
     };
     const transport = host(fetchImpl);
-    const huge = new Blob([new Uint8Array(1)], { type: "application/zip" });
-    Object.defineProperty(huge, "size", { value: 100 * 1024 * 1024 + 1 });
-    assert.match((await transport("nexus", input({ apiKey: "k" }, { file: huge }))).message ?? "", /100 MiB/);
     mode.value = "empty";
     assert.match((await transport("curseforge", input({ token: "t", projectId: "1" }))).message ?? "", /422/);
     mode.value = "plain";
@@ -191,11 +218,15 @@ describe("live transport", () => {
     assert.match((await transport("nexus", input({ apiKey: "k", modId: "1" }))).message ?? "", /upload slot/);
     mode.value = "notarget";
     assert.match((await transport("nexus", input({ apiKey: "k", modId: "1" }))).message ?? "", /upload slot/);
+    mode.value = "nocomplete";
+    assert.match((await transport("nexus", input({ apiKey: "k", modId: "1" }))).message ?? "", /upload slot/);
     mode.value = "num";
     assert.match((await transport("nexus", input({ apiKey: "k", modId: "1" }))).message ?? "", /upload slot/);
     mode.value = "put";
     assert.match((await transport("nexus", input({ apiKey: "k", modId: "1" }))).message ?? "", /signature/);
     mode.value = "final";
+    assert.match((await transport("nexus", input({ apiKey: "k", modId: "1" }))).message ?? "", /closed/);
+    mode.value = "xml";
     assert.match((await transport("nexus", input({ apiKey: "k", modId: "1" }))).message ?? "", /closed/);
     mode.value = "wait";
     assert.match((await transport("nexus", input({ apiKey: "k", modId: "1" }))).message ?? "", /still working/);

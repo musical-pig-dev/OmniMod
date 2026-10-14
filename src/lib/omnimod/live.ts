@@ -3,7 +3,6 @@ import type { PublishInput, Transport, TransportResult } from "./publish.ts";
 import { studioTransport } from "./storage.ts";
 
 const NEXUS = "https://api.nexusmods.com/v3";
-const NEXUS_SINGLE_PART = 100 * 1024 * 1024;
 const NEXUS_POLLS = 8;
 const NEXUS_POLL_MS = 1500;
 
@@ -40,29 +39,51 @@ async function publishNexus(
   pause: (ms: number) => Promise<void>,
 ): Promise<TransportResult> {
   const file = input.file!;
-  if (file.size > NEXUS_SINGLE_PART) {
-    return { ok: false, message: "Nexus single-part upload stops at 100 MiB." };
-  }
   const filename = safeNexusName(input.fileName);
-  const created = await fetchImpl(`${NEXUS}/uploads`, {
+  const apiKey = fields.apiKey ?? "";
+  const created = await fetchImpl(`${NEXUS}/uploads/multipart`, {
     method: "POST",
-    headers: { ...nexusHeaders(fields.apiKey ?? ""), "content-type": "application/json" },
-    body: JSON.stringify({ size_bytes: file.size, filename }),
+    headers: { ...nexusHeaders(apiKey), "content-type": "application/json" },
+    body: JSON.stringify({ filename, size_bytes: file.size }),
   });
   if (!created.ok) return { ok: false, message: await errorText(created) };
   const session = dataOf(await created.json());
   const uploadId = String(session.id ?? "");
-  const target = String(session.presigned_url ?? "");
-  if (!uploadId || !target) return { ok: false, message: "Nexus did not return an upload slot." };
-  const put = await fetchImpl(target, {
-    method: "PUT",
-    headers: { "content-disposition": `attachment; filename="${filename}"` },
-    body: new Uint8Array(await file.arrayBuffer()),
+  const listed = session.part_presigned_urls;
+  const parts = Array.isArray(listed) ? listed.map((part) => String(part)) : [];
+  const completeUrl = String(session.complete_presigned_url ?? "");
+  const partSize = Number(session.part_size_bytes) || file.size;
+  if (!uploadId || parts.length === 0 || !completeUrl) {
+    return { ok: false, message: "Nexus did not return an upload slot." };
+  }
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const etags: string[] = [];
+  for (let index = 0; index < parts.length; index += 1) {
+    const start = index * partSize;
+    const chunk = bytes.subarray(start, Math.min(start + partSize, bytes.length));
+    const put = await fetchImpl(parts[index], {
+      method: "PUT",
+      headers: {
+        "content-type": "application/octet-stream",
+        "content-length": String(chunk.length),
+      },
+      body: chunk,
+    });
+    if (!put.ok) return { ok: false, message: await errorText(put) };
+    etags.push((put.headers.get("etag") ?? "").replace(/"/g, ""));
+  }
+  const xml = `<CompleteMultipartUpload>\n${etags
+    .map((etag, index) => `  <Part>\n    <PartNumber>${index + 1}</PartNumber>\n    <ETag>${etag}</ETag>\n  </Part>`)
+    .join("\n")}\n</CompleteMultipartUpload>`;
+  const completed = await fetchImpl(completeUrl, {
+    method: "POST",
+    headers: { "content-type": "application/xml" },
+    body: xml,
   });
-  if (!put.ok) return { ok: false, message: await errorText(put) };
+  if (!completed.ok) return { ok: false, message: await errorText(completed) };
   const finalised = await fetchImpl(`${NEXUS}/uploads/${uploadId}/finalise`, {
     method: "POST",
-    headers: nexusHeaders(fields.apiKey ?? ""),
+    headers: nexusHeaders(apiKey),
   });
   if (!finalised.ok) return { ok: false, message: await errorText(finalised) };
   const ready = await waitForNexus(fetchImpl, uploadId, fields.apiKey ?? "", pause);
