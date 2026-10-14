@@ -14,7 +14,7 @@ function withReady(ids: PlatformId[]): ConfigMap {
   const fieldsById: Record<PlatformId, Record<string, string>> = {
     nexus: { apiKey: "k", gameDomain: "site", modId: "1" },
     curseforge: { token: "t", projectId: "2" },
-    modrinth: { token: "t", project: "slug" },
+    modrinth: { token: "t", project: "slug", gameVersions: "1.20.1", loaders: "fabric" },
     github: { token: "t", repo: "a/b" },
     thunderstore: { token: "t", namespace: "Team" },
     steam: { appId: "480", itemId: "9" },

@@ -149,6 +149,8 @@ const PRACTICE: Record<string, string> = {
   gameDomain: "skyrimspecialedition",
   projectId: "88211",
   project: "weathered-lanterns",
+  gameVersions: "1.20.1",
+  loaders: "fabric",
   repo: "studio/weathered-lanterns",
   namespace: "Studio",
   appId: "480",

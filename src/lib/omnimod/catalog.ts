@@ -53,12 +53,14 @@ export const PLATFORMS: Platform[] = [
   {
     id: "modrinth",
     name: "Modrinth",
-    summary: "Versions API. A token with version create, plus the project.",
+    summary: "Versions API. A token with version create, the project, and the game versions and loaders that file supports.",
     tokenUrl: "https://modrinth.com/settings/pats",
     tokenLabel: "Create a Modrinth token",
     fields: [
       { key: "token", label: "Personal access token", secret: true, placeholder: "mrp_…" },
       { key: "project", label: "Project ID or slug", placeholder: "lanterns" },
+      { key: "gameVersions", label: "Game versions", placeholder: "1.20.1, 1.20.2" },
+      { key: "loaders", label: "Loaders", placeholder: "fabric" },
     ],
   },
   {

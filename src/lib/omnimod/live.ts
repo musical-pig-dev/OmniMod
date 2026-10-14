@@ -2,6 +2,8 @@ import type { PlatformId } from "./catalog.ts";
 import type { PublishInput, Transport, TransportResult } from "./publish.ts";
 import { studioTransport } from "./storage.ts";
 
+const MODRINTH = "https://api.modrinth.com/v2";
+const MODRINTH_AGENT = "OmniMod/0.1";
 const NEXUS = "https://api.nexusmods.com/v3";
 const NEXUS_POLLS = 8;
 const NEXUS_POLL_MS = 1500;
@@ -170,6 +172,20 @@ async function publishModrinth(
   input: PublishInput,
   fields: Record<string, string>,
 ): Promise<TransportResult> {
+  const token = (fields.token ?? "").trim();
+  const project = (fields.project ?? "").trim();
+  let projectId = project;
+  if (project) {
+    const looked = await fetchImpl(`${MODRINTH}/project/${encodeURIComponent(project)}`, {
+      headers: modrinthHeaders(token),
+    });
+    if (!looked.ok) return { ok: false, message: await errorText(looked) };
+    const data = dataOf(await looked.json());
+    projectId = String(data.id ?? "");
+    if (!projectId) return { ok: false, message: "Modrinth project lookup returned no id." };
+    const mismatch = modrinthFile(String(data.project_type ?? ""), input.fileName);
+    if (mismatch) return { ok: false, message: mismatch };
+  }
   const body = new FormData();
   body.set(
     "data",
@@ -178,24 +194,49 @@ async function publishModrinth(
       version_number: input.version.trim(),
       changelog: input.changelog.trim(),
       dependencies: [],
-      game_versions: [],
+      game_versions: splitList(fields.gameVersions),
       version_type: "release",
-      loaders: [],
+      loaders: splitList(fields.loaders),
       featured: false,
       status: "listed",
-      project_id: (fields.project ?? "").trim(),
+      project_id: projectId,
       file_parts: ["file"],
       primary_file: "file",
     }),
   );
   body.set("file", input.file!, input.fileName);
-  const response = await fetchImpl("https://api.modrinth.com/v2/version", {
+  const response = await fetchImpl(`${MODRINTH}/version`, {
     method: "POST",
-    headers: { authorization: (fields.token ?? "").trim() },
+    headers: modrinthHeaders(token),
     body,
   });
   if (!response.ok) return { ok: false, message: await errorText(response) };
   return { ok: true };
+}
+
+function modrinthHeaders(token: string): Record<string, string> {
+  return { authorization: token, "user-agent": MODRINTH_AGENT, accept: "application/json" };
+}
+
+function splitList(value: string | undefined): string[] {
+  return (value ?? "")
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function modrinthFile(projectType: string, fileName: string): string | null {
+  const ext = fileName.includes(".") ? fileName.slice(fileName.lastIndexOf(".")).toLowerCase() : "";
+  if (projectType === "mod" && ext !== ".jar") {
+    return "This Modrinth project is a mod. It needs a .jar with fabric.mod.json or mods.toml.";
+  }
+  if (projectType === "modpack" && ext !== ".mrpack") {
+    return "This Modrinth project is a modpack. It needs a .mrpack file.";
+  }
+  if ((projectType === "resourcepack" || projectType === "datapack" || projectType === "shader") && ext !== ".zip") {
+    return `This Modrinth project is a ${projectType}. It needs a .zip file.`;
+  }
+  return null;
 }
 
 async function publishGitHub(

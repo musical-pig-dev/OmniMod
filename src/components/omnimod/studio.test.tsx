@@ -94,6 +94,8 @@ describe("Studio", () => {
     await user.click(screen.getByRole("button", { name: /Modrinth/ }));
     await typeField(user, "Personal access token", "secret");
     await typeField(user, "Project ID or slug", "lanterns");
+    await typeField(user, "Game versions", "1.20.1");
+    await typeField(user, "Loaders", "fabric");
     await user.click(screen.getByRole("button", { name: /Hosts/ }));
     await user.upload(document.querySelector('input[type="file"]') as HTMLInputElement, zip("notes.txt", 2048));
     const refused = screen.getByRole("textbox", { name: "Version *" });
@@ -152,6 +154,8 @@ describe("Studio", () => {
     await user.click(screen.getByRole("button", { name: /Modrinth/ }));
     await typeField(user, "Personal access token", "secret");
     await typeField(user, "Project ID or slug", "lanterns");
+    await typeField(user, "Game versions", "1.20.1");
+    await typeField(user, "Loaders", "fabric");
     await user.click(screen.getByRole("button", { name: /Hosts/ }));
     expect(screen.getByText("More than one file is allowed. Largest file 500 MiB.")).toBeTruthy();
     const huge = new File(["x"], "huge.zip");

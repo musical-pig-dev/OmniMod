@@ -115,6 +115,7 @@ describe("live transport", () => {
     assert.equal((await transport("curseforge", input({}))).ok, true);
     assert.equal((await transport("modrinth", input({ token: "mrp", project: "lanterns" }))).ok, true);
     assert.equal((await transport("modrinth", input({}))).ok, true);
+    assert.ok(calls.some((call) => call.startsWith("GET https://api.modrinth.com/v2/project/lanterns")));
     assert.equal((await transport("github", input({ token: "gh", repo: "studio/mod" }))).ok, true);
     assert.equal((await transport("github", input({ repo: "studio/mod" }))).ok, true);
     const thunder = await transport("thunderstore", input({ token: "tss", namespace: "Team" }));
@@ -269,5 +270,52 @@ describe("live transport", () => {
     assert.match((await transport("modrinth", input({ token: "t", project: "p" }))).message ?? "", /null/);
     mode.value = "blank";
     assert.equal((await transport("modrinth", input({ token: "t", project: "p" }))).ok, false);
+  });
+
+  it("resolves a Modrinth slug and refuses a file the project type cannot take", async () => {
+    const posted: string[] = [];
+    const agents: string[] = [];
+    const fetchImpl: typeof fetch = async (url, init) => {
+      const target = String(url);
+      const headers = new Headers(init?.headers);
+      agents.push(headers.get("user-agent") ?? "");
+      if (target.endsWith("/project/lanterns")) {
+        return jsonResponse({ id: "XG8V0uy1", project_type: "mod" });
+      }
+      if (target.endsWith("/project/pack")) {
+        return jsonResponse({ id: "PACKID01", project_type: "resourcepack" });
+      }
+      if (target.endsWith("/project/missing-id")) return jsonResponse({});
+      if (target.endsWith("/version") && init?.method === "POST" && init.body instanceof FormData) {
+        posted.push(String(init.body.get("data")));
+        return jsonResponse({ id: "8uaAZimd" });
+      }
+      return jsonResponse({ description: "no" }, 404);
+    };
+    const transport = host(fetchImpl);
+    const refused = await transport(
+      "modrinth",
+      input({ token: "mrp", project: "lanterns", gameVersions: "1.20.1", loaders: "fabric" }),
+    );
+    assert.match(refused.message ?? "", /needs a \.jar/);
+    assert.equal(posted.length, 0);
+    const accepted = await transport(
+      "modrinth",
+      input(
+        { token: "mrp", project: "lanterns", gameVersions: "1.20.1, 1.21", loaders: "fabric, quilt" },
+        { fileName: "test-mod.jar" },
+      ),
+    );
+    assert.equal(accepted.ok, true);
+    assert.match(posted[0] ?? "", /"project_id":"XG8V0uy1"/);
+    assert.match(posted[0] ?? "", /"game_versions":\["1\.20\.1","1\.21"\]/);
+    assert.match(posted[0] ?? "", /"loaders":\["fabric","quilt"\]/);
+    const pack = await transport(
+      "modrinth",
+      input({ token: "mrp", project: "pack" }, { fileName: "pack.jar" }),
+    );
+    assert.match(pack.message ?? "", /resourcepack/);
+    assert.match((await transport("modrinth", input({ token: "mrp", project: "missing-id" }))).message ?? "", /no id/);
+    assert.ok(agents.every((agent) => agent === "OmniMod/0.1"));
   });
 });
