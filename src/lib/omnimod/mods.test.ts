@@ -6,6 +6,7 @@ import {
   emptyTargets,
   hydrateMod,
   lastPublished,
+  nextPatch,
   mergeAccount,
   modId,
   nameTaken,
@@ -65,7 +66,7 @@ describe("mods", () => {
     const mod = { ...createMod("Lanterns"), fileName: "lanterns.zip", version: "1.4.2", changelog: "Glass." };
     const sent = recordPublish(mod, "1.4.2", true);
     assert.equal(sent.fileName, "");
-    assert.equal(sent.version, "");
+    assert.equal(sent.version, "1.4.3");
     assert.equal(sent.changelog, "");
     assert.deepEqual(sent.publishedVersions, ["1.4.2"]);
     assert.equal(lastPublished(sent.publishedVersions), "1.4.2");
@@ -85,6 +86,7 @@ describe("mods", () => {
     assert.match(modId(), /^[0-9a-f-]{36}$/);
     assert.match(modId({}), /^mod-\d+$/);
     assert.equal(createMod().name, "Untitled mod");
+    assert.equal(createMod().version, "0.0.1");
   });
 
   it("clears a successful publish that has no version text", () => {
@@ -109,6 +111,11 @@ describe("mods", () => {
     assert.equal(versionUsed(undefined, "1.0.0"), false);
     assert.equal(lastPublished(undefined), "");
     assert.equal(lastPublished(["", " "]), "");
+    assert.equal(nextPatch("1.4.2"), "1.4.3");
+    assert.equal(nextPatch("v1.0.9"), "v1.0.10");
+    assert.equal(nextPatch("1.02"), "1.03");
+    assert.equal(nextPatch("beta"), "");
+    assert.equal(nextPatch("  "), "");
   });
 
   it("keeps published versions when a saved mod is loaded", () => {

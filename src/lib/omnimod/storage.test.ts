@@ -3,6 +3,8 @@ import { describe, it } from "vitest";
 import { defaultConfigs } from "./catalog.ts";
 import { createMod } from "./mods.ts";
 import {
+  ACTIVE_KEY,
+  MODS_KEY,
   formatBytes,
   loadConfigs,
   loadLibrary,
@@ -37,7 +39,7 @@ describe("storage", () => {
       memoryStorage({ "omnimod-configs-v1": JSON.stringify({ nexus: { enabled: true } }) }),
     );
     assert.equal(missingFields.nexus.fields.apiKey ?? "", "");
-    assert.equal(loadLibrary(defaultConfigs(), null).mods[0]?.name, "Untitled mod");
+    assert.equal(loadLibrary(defaultConfigs(), null).mods.length, 0);
     assert.equal(loadConfigs(memoryStorage()).github.enabled, true);
     const saved = loadConfigs(
       memoryStorage({
@@ -57,21 +59,21 @@ describe("storage", () => {
   it("loads a library, an empty library, and a broken library", () => {
     const mod = createMod("Lanterns");
     const stored = memoryStorage({
-      "omnimod-mods-v1": JSON.stringify([mod]),
-      "omnimod-active-mod": mod.id,
+      [MODS_KEY]: JSON.stringify([mod]),
+      [ACTIVE_KEY]: mod.id,
     });
     assert.equal(loadLibrary(defaultConfigs(), stored).activeId, mod.id);
-    stored.setItem("omnimod-active-mod", "missing");
+    stored.setItem(ACTIVE_KEY, "missing");
     assert.equal(loadLibrary(defaultConfigs(), stored).activeId, mod.id);
-    assert.deepEqual(loadLibrary(defaultConfigs(), memoryStorage({ "omnimod-mods-v1": "[]" })), {
+    assert.deepEqual(loadLibrary(defaultConfigs(), memoryStorage({ [MODS_KEY]: "[]" })), {
       mods: [],
       activeId: "",
     });
-    const fresh = loadLibrary(defaultConfigs(), memoryStorage({ "omnimod-mods-v1": "{" }));
-    assert.equal(fresh.mods[0]?.name, "Untitled mod");
-    const notArray = loadLibrary(defaultConfigs(), memoryStorage({ "omnimod-mods-v1": "{}" }));
-    assert.equal(notArray.mods.length, 1);
-    assert.equal(loadLibrary(defaultConfigs(), undefined).mods[0]?.name, "Untitled mod");
+    const fresh = loadLibrary(defaultConfigs(), memoryStorage({ [MODS_KEY]: "{" }));
+    assert.equal(fresh.mods.length, 0);
+    const notArray = loadLibrary(defaultConfigs(), memoryStorage({ [MODS_KEY]: "{}" }));
+    assert.equal(notArray.mods.length, 0);
+    assert.equal(loadLibrary(defaultConfigs(), undefined).mods.length, 0);
   });
 
   it("answers the rehearsal transport", async () => {

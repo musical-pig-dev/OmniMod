@@ -4,14 +4,20 @@ import {
   ChevronDown,
   ExternalLink,
   KeyRound,
+  Lock,
+  LockOpen,
   Package,
   Upload,
 } from "lucide-react";
 import {
   PLATFORMS,
+  acceptFiles,
   defaultConfigs,
+  hostLimitDetail,
   isConfigured,
   platformById,
+  uploadHint,
+  uploadRule,
   type ConfigMap,
   type Platform,
   type PlatformConfig,
@@ -33,12 +39,13 @@ import {
   loadLibrary,
   studioTransport,
 } from "@/lib/omnimod/storage";
+import { VAULT_KEY, importRecoveryKey, openVault, seal, type VaultPayload } from "@/lib/omnimod/vault";
 import { RevisionLink } from "@/components/omnimod/revision";
+import { ProtectKeys, UnlockKeys } from "@/components/omnimod/vault-lock";
 
 import {
   readyCount,
   runPublish,
-  practiceFields,
   type PublishInput,
   type SiteResult,
   type PublishProgress,
@@ -68,14 +75,48 @@ function CredentialMark({ saved }: { saved: boolean }) {
   );
 }
 
-function StatusPill({ kind }: { kind: SiteResult["status"] }) {
-  const label = kind === "success" ? "Sent" : kind === "error" ? "Failed" : "Skipped";
-  const tone =
-    kind === "success" ? "bg-ok/15 text-ok" : kind === "error" ? "bg-bad/15 text-bad" : "bg-raised text-mist";
+function ResultSlip({ result, index }: { result: SiteResult; index: number }) {
+  const name = PLATFORMS.find((platform) => platform.id === result.id)?.name ?? result.id;
+  const sent = result.status === "success";
+  const failed = result.status === "error";
+  const label = sent ? "Sent" : failed ? "Failed" : "Skipped";
   return (
-    <span className={`inline-flex min-h-7 items-center rounded-full px-3 text-xs font-medium ${tone}`}>
-      {label}
-    </span>
+    <li
+      className={`flex items-center gap-3 rounded-2xl border bg-ink px-4 py-3 ${
+        sent ? "parcel-arrive border-ok/35" : failed ? "parcel-return border-bad/40" : "parcel-held border-dashed border-line"
+      }`}
+      style={{ animationDelay: `${index * 70}ms` }}
+    >
+      <span
+        className={`relative grid size-12 shrink-0 place-items-center rounded-xl border ${
+          sent
+            ? "border-brass/50 bg-brass/10 text-brass"
+            : failed
+              ? "border-bad/40 bg-bad/10 text-bad"
+              : "border-dashed border-line bg-panel text-mist"
+        }`}
+        aria-hidden="true"
+      >
+        <Package className="size-5" />
+        {sent ? (
+          <span className="parcel-seal absolute -right-1 -bottom-1 grid size-5 place-items-center rounded-full bg-ok text-ink">
+            <Check className="size-3" />
+          </span>
+        ) : null}
+        {failed ? <span className="absolute inset-x-2 top-1/2 border-t border-bad" /> : null}
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="font-medium text-ivory">{name}</p>
+        <p className="mt-1 text-sm leading-relaxed text-mist">{result.message}</p>
+      </div>
+      <span
+        className={`shrink-0 -rotate-6 rounded border px-2 py-1 text-[10px] font-medium uppercase tracking-[0.16em] ${
+          sent ? "border-ok/50 text-ok" : failed ? "border-bad/50 text-bad" : "border-line text-mist"
+        }`}
+      >
+        {label}
+      </span>
+    </li>
   );
 }
 
@@ -94,6 +135,7 @@ export function SiteCard({
 }) {
   const fields = platform.fields;
   const saved = isConfigured(platform, config);
+  const hasValue = fields.some((field) => (config.fields[field.key] ?? "").trim().length > 0);
   const panelId = useId();
   return (
     <article className="rounded-card border border-line bg-panel">
@@ -113,6 +155,7 @@ export function SiteCard({
               ) : null}
             </span>
             <span className="mt-1 block text-sm leading-relaxed text-mist">{platform.summary}</span>
+            <span className="mt-1 block text-sm text-mist">{hostLimitDetail(platform.id)}</span>
           </span>
           <CredentialMark saved={saved} />
           <ChevronDown
@@ -144,12 +187,11 @@ export function SiteCard({
           <div className="flex flex-wrap items-center gap-3 pt-1">
             <button
               type="button"
-              onClick={() => {
-                onChange({ enabled: true, fields: { ...config.fields, ...practiceFields(platform.id) } });
-              }}
-              className="min-h-11 rounded-full border border-line px-4 text-sm text-ivory hover:border-brass"
+              disabled={!hasValue}
+              onClick={() => onChange({ ...config, fields: {} })}
+              className="min-h-11 rounded-full border border-line px-4 text-sm text-ivory hover:border-brass disabled:cursor-not-allowed disabled:text-mist"
             >
-              Use a practice key
+              Clear
             </button>
             {platform.tokenUrl ? (
               <a
@@ -219,8 +261,11 @@ export function Delivery({
 
 export function Studio({ transport = studioTransport() }: { transport?: Transport } = {}) {
   const fileRef = useRef<HTMLInputElement>(null);
+  const vaultKey = useRef<CryptoKey | null>(null);
   const [hydrated, setHydrated] = useState(false);
-  const [mods, setMods] = useState<ModRecord[]>(() => [createMod("Untitled mod")]);
+  const [vault, setVault] = useState<"off" | "locked" | "open">("off");
+  const [arming, setArming] = useState(false);
+  const [mods, setMods] = useState<ModRecord[]>([]);
   const [activeId, setActiveId] = useState("");
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -228,6 +273,7 @@ export function Studio({ transport = studioTransport() }: { transport?: Transpor
   const [draftName, setDraftName] = useState("");
   const [nameEdit, setNameEdit] = useState<string | null>(null);
   const [fileSize, setFileSize] = useState<number | null>(null);
+  const [fileError, setFileError] = useState<string | null>(null);
   const [openId, setOpenId] = useState<PlatformId | null>(null);
   const [hostsOpen, setHostsOpen] = useState(false);
   const [running, setRunning] = useState(false);
@@ -252,6 +298,12 @@ export function Studio({ transport = studioTransport() }: { transport?: Transpor
     input.fileName.trim().length > 0 && detailsReady && ready > 0 && !running && !repeatVersion;
 
   useEffect(() => {
+    const sealed = localStorage.getItem(VAULT_KEY);
+    if (sealed) {
+      setVault("locked");
+      setHydrated(true);
+      return;
+    }
     const stored = loadConfigs();
     const library = loadLibrary(stored);
     setMods(library.mods);
@@ -260,12 +312,29 @@ export function Studio({ transport = studioTransport() }: { transport?: Transpor
   }, []);
 
   useEffect(() => {
-    if (!hydrated) return;
+    if (!hydrated || vault === "locked") return;
+    const key = vaultKey.current;
+    if (vault === "open" && key) {
+      let cancel = false;
+      const payload: VaultPayload = { mods, activeId };
+      void seal(key, payload).then((sealed) => {
+        if (cancel) return;
+        localStorage.setItem(VAULT_KEY, sealed);
+        localStorage.removeItem(MODS_KEY);
+        localStorage.removeItem(ACTIVE_KEY);
+      });
+      return () => {
+        cancel = true;
+      };
+    }
     localStorage.setItem(MODS_KEY, JSON.stringify(mods));
     localStorage.setItem(ACTIVE_KEY, activeId);
-  }, [mods, activeId, hydrated]);
+  }, [mods, activeId, hydrated, vault]);
 
-  const visibleMods = mods.filter((mod) => mod.name.toLowerCase().includes(query.trim().toLowerCase()));
+  const visibleMods = mods.filter((mod) =>
+    mods.length > 20 ? mod.name.toLowerCase().includes(query.trim().toLowerCase()) : true,
+  );
+  const rule = uploadRule(hostConfigs);
 
   function patchMod(id: string, partial: Partial<ModRecord>) {
     setMods((list) => list.map((mod) => (mod.id === id ? { ...mod, ...partial } : mod)));
@@ -274,17 +343,20 @@ export function Studio({ transport = studioTransport() }: { transport?: Transpor
   function update(id: PlatformId, next: PlatformConfig) {
     const current = active!;
     const saved = { ...next, enabled: true };
-    const platform = platformById(id);
-    const wasReady = isConfigured(platform, current.configs[id]);
     patchMod(current.id, { configs: { ...current.configs, [id]: saved } });
-    if (!wasReady && isConfigured(platform, saved)) setOpenId(null);
   }
 
-  function onFile(file: File | undefined) {
-    if (!file) return;
-    const match = !active!.version.trim() ? file.name.match(/(\d+\.\d+\.\d+)/) : null;
-    patchMod(active!.id, { fileName: file.name, version: match ? match[1] : active!.version });
-    setFileSize(file.size);
+  function onFile(list: FileList | File[] | undefined) {
+    const files = list ? [...list] : [];
+    if (!files.length || !active) return;
+    const accepted = acceptFiles(files, rule, active.version);
+    if (!accepted.ok) {
+      setFileError(accepted.message);
+      return;
+    }
+    setFileError(null);
+    patchMod(active.id, { fileName: accepted.fileName, version: accepted.version });
+    setFileSize(accepted.size);
     setResults(null);
   }
 
@@ -311,6 +383,7 @@ export function Studio({ transport = studioTransport() }: { transport?: Transpor
           publishedVersions: recorded.publishedVersions,
         });
         setFileSize(null);
+        setFileError(null);
       }
     } finally {
       setRunning(false);
@@ -329,7 +402,7 @@ export function Studio({ transport = studioTransport() }: { transport?: Transpor
             <div>
               <p className="font-display text-3xl leading-none tracking-tight">OmniMod</p>
               <p className="mt-2 max-w-md text-sm leading-relaxed text-mist">
-                One package at a time. Switch mods when you have more than one.
+                One archive, published to every host that is ready.
               </p>
             </div>
           </div>
@@ -349,7 +422,35 @@ export function Studio({ transport = studioTransport() }: { transport?: Transpor
           </button>
         </header>
 
-        {hostsOpen ? (
+        {vault === "locked" ? (
+          <UnlockKeys
+            onUnlock={async (secret) => {
+              const sealed = localStorage.getItem(VAULT_KEY);
+              if (!sealed) return false;
+              const opened = await openVault(secret, sealed);
+              if (!opened) return false;
+              vaultKey.current = opened.key;
+              setMods(opened.payload.mods);
+              setActiveId(opened.payload.activeId);
+              setVault("open");
+              return true;
+            }}
+          />
+        ) : arming ? (
+          <ProtectKeys
+            onCancel={() => setArming(false)}
+            onProtect={(secret) => {
+              void importRecoveryKey(secret).then((key) => {
+                if (!key) return;
+                vaultKey.current = key;
+                setArming(false);
+                setVault("open");
+              });
+            }}
+          />
+        ) : null}
+
+        {vault === "locked" || arming ? null : hostsOpen ? (
           <section key={active?.id ?? "no-mod"} className="mx-auto w-full min-w-0 max-w-3xl space-y-3">
             <div className="flex items-center justify-between gap-3 px-1">
               <p className="text-sm text-mist">
@@ -377,6 +478,7 @@ export function Studio({ transport = studioTransport() }: { transport?: Transpor
                 </select>
               ) : null}
             </div>
+            <p className="px-1 text-sm text-mist">{uploadHint(rule)}</p>
             {active
               ? PLATFORMS.map((platform) => (
                   <SiteCard
@@ -394,7 +496,7 @@ export function Studio({ transport = studioTransport() }: { transport?: Transpor
           </section>
         ) : null}
 
-        {hostsOpen ? null : (
+        {hostsOpen || vault === "locked" || arming ? null : (
         <section key={active?.id ?? "none"} className="mx-auto w-full min-w-0 max-w-xl space-y-4">
             <div className="rounded-card border border-line bg-panel p-4 sm:p-5">
               <div className="mb-4 flex items-center gap-3">
@@ -452,13 +554,15 @@ export function Studio({ transport = studioTransport() }: { transport?: Transpor
                 </>
               ) : libraryOpen || !active ? (
                 <div className="space-y-3">
-                  <input
-                    value={query}
-                    onChange={(event) => setQuery(event.target.value)}
-                    placeholder="Find a mod"
-                    aria-label="Find a mod"
-                    className="h-11 w-full rounded-xl border border-line bg-ink px-3 outline-none placeholder:text-mist/70 focus:border-brass"
-                  />
+                  {mods.length > 20 ? (
+                    <input
+                      value={query}
+                      onChange={(event) => setQuery(event.target.value)}
+                      placeholder="Find a mod"
+                      aria-label="Find a mod"
+                      className="h-11 w-full rounded-xl border border-line bg-ink px-3 outline-none placeholder:text-mist/70 focus:border-brass"
+                    />
+                  ) : null}
                   <ul className="max-h-80 space-y-1 overflow-y-auto">
                     {visibleMods.map((mod) => (
                       <li key={mod.id} className="flex items-center gap-2">
@@ -566,7 +670,7 @@ export function Studio({ transport = studioTransport() }: { transport?: Transpor
                 onDragOver={(event) => event.preventDefault()}
                 onDrop={(event) => {
                   event.preventDefault();
-                  onFile(event.dataTransfer.files[0]);
+                  onFile(event.dataTransfer.files);
                 }}
                 className="flex min-h-36 w-full flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-line bg-ink px-4 py-6 text-center hover:border-brass"
               >
@@ -579,19 +683,19 @@ export function Studio({ transport = studioTransport() }: { transport?: Transpor
                     </span>
                   </>
                 ) : (
-                  <>
-                    <span className="font-medium">Drop a zip, or choose a file</span>
-                    <span className="text-sm text-mist">The archive stays on this device.</span>
-                  </>
+                  <span className="font-medium">{rule.multiple ? "Drop files, or choose them" : "Drop a zip, or choose a file"}</span>
                 )}
+                <span className="text-sm text-mist">{uploadHint(rule)}</span>
               </button>
               <input
                 ref={fileRef}
                 type="file"
                 accept=".zip,.7z,.rar,application/zip"
+                multiple={rule.multiple}
                 className="sr-only"
-                onChange={(event) => onFile(event.target.files?.[0])}
+                onChange={(event) => onFile(event.target.files ?? undefined)}
               />
+              {fileError ? <p className="mt-2 text-sm text-bad">{fileError}</p> : null}
               <label className="mt-4 block">
                 <span className="mb-1.5 block text-sm text-mist">
                   Version <span className="text-brass">*</span>
@@ -641,23 +745,32 @@ export function Studio({ transport = studioTransport() }: { transport?: Transpor
             </div>
             {results ? (
               <ol className="space-y-2">
-                {results.map((result) => (
-                  <li
-                    key={result.id}
-                    className="flex items-start justify-between gap-3 rounded-2xl border border-line bg-ink px-4 py-3"
-                  >
-                    <div>
-                      <p className="font-medium">
-                        {PLATFORMS.find((platform) => platform.id === result.id)?.name}
-                      </p>
-                      <p className="mt-1 text-sm leading-relaxed text-mist">{result.message}</p>
-                    </div>
-                    <StatusPill kind={result.status} />
-                  </li>
+                {results.map((result, index) => (
+                  <ResultSlip key={result.id} result={result} index={index} />
                 ))}
               </ol>
             ) : null}
           </section>
+        )}
+        {vault === "off" ? (
+          <button
+            type="button"
+            onClick={() => {
+              setHostsOpen(false);
+              setArming(true);
+            }}
+            className="fixed bottom-3 left-3 z-20 inline-flex min-h-11 items-center gap-2 text-sm text-ivory"
+          >
+            <LockOpen className="size-5 text-brass/35" aria-hidden="true" />
+            Encrypt Keys
+          </button>
+        ) : (
+          <span
+            aria-label="Keys encrypted"
+            className="fixed bottom-3 left-3 z-20 inline-flex min-h-11 items-center text-brass"
+          >
+            <Lock className="size-5" aria-hidden="true" />
+          </span>
         )}
         <RevisionLink />
         </div>

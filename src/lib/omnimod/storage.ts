@@ -5,12 +5,12 @@ import {
   type ConfigMap,
   type PlatformId,
 } from "./catalog.ts";
-import { hydrateMod, targetsFromConfigs, type ModRecord } from "./mods.ts";
+import { hydrateMod, type ModRecord } from "./mods.ts";
 import type { PublishInput, Transport } from "./publish.ts";
 
 export const STORAGE_KEY = "omnimod-configs-v1";
-export const MODS_KEY = "omnimod-mods-v1";
-export const ACTIVE_KEY = "omnimod-active-mod";
+export const MODS_KEY = "omnimod-mods-v2";
+export const ACTIVE_KEY = "omnimod-active-mod-v2";
 
 export function formatBytes(size: number): string {
   if (size < 1024) return `${size} B`;
@@ -44,17 +44,14 @@ export function loadLibrary(
   configs: ConfigMap,
   storage: Pick<Storage, "getItem"> | null = globalThis.localStorage,
 ): { mods: ModRecord[]; activeId: string } {
-  const fresh = () => {
-    const first = hydrateMod({ name: "Untitled mod", targets: targetsFromConfigs(configs) }, configs);
-    return { mods: [first], activeId: first.id };
-  };
-  if (!storage) return fresh();
+  const empty = () => ({ mods: [] as ModRecord[], activeId: "" });
+  if (!storage) return empty();
   try {
     const raw = storage.getItem(MODS_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as unknown;
       if (Array.isArray(parsed)) {
-        if (parsed.length === 0) return { mods: [], activeId: "" };
+        if (parsed.length === 0) return empty();
         const mods = parsed.map((mod) => hydrateMod(mod as ModRecord, configs));
         const saved = storage.getItem(ACTIVE_KEY);
         const activeId = mods.some((mod) => mod.id === saved) ? (saved as string) : mods[0].id;
@@ -62,9 +59,9 @@ export function loadLibrary(
       }
     }
   } catch {
-    return fresh();
+    return empty();
   }
-  return fresh();
+  return empty();
 }
 
 export function studioDelay(id: string): number {

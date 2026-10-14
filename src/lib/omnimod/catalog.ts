@@ -147,3 +147,82 @@ export function readiness(platform: Platform, config: PlatformConfig): SiteReadi
   if (!isConfigured(platform, config)) return "needs-setup";
   return "ready";
 }
+
+const MiB = 1024 * 1024;
+const GiB = 1024 * MiB;
+
+type HostUpload = { maxBytes: number | null; label: string; multiple: boolean };
+
+const HOST_UPLOAD: Record<PlatformId, HostUpload> = {
+  modrinth: { maxBytes: 500 * MiB, label: "500 MiB", multiple: true },
+  curseforge: { maxBytes: 2 * GiB - 1, label: "2 GB", multiple: false },
+  github: { maxBytes: 2 * GiB - 1, label: "2 GiB", multiple: true },
+  thunderstore: { maxBytes: 5_242_880_000, label: "5 GB", multiple: false },
+  nexus: { maxBytes: null, label: "", multiple: false },
+  steam: { maxBytes: null, label: "", multiple: false },
+};
+
+export type UploadRule = {
+  hosts: number;
+  maxBytes: number | null;
+  label: string;
+  multiple: boolean;
+};
+
+export function uploadRule(configs: ConfigMap): UploadRule {
+  const hosts = PLATFORMS.filter((platform) => {
+    const config = configs[platform.id];
+    return Boolean(config?.enabled && isConfigured(platform, config));
+  });
+  if (hosts.length === 0) return { hosts: 0, maxBytes: null, label: "", multiple: false };
+  let maxBytes: number | null = null;
+  let label = "";
+  for (const host of hosts) {
+    const rule = HOST_UPLOAD[host.id];
+    if (rule.maxBytes == null) continue;
+    if (maxBytes == null || rule.maxBytes < maxBytes) {
+      maxBytes = rule.maxBytes;
+      label = rule.label;
+    }
+  }
+  return {
+    hosts: hosts.length,
+    maxBytes,
+    label,
+    multiple: hosts.every((host) => HOST_UPLOAD[host.id].multiple),
+  };
+}
+
+export function hostLimitDetail(id: PlatformId): string {
+  const rule = HOST_UPLOAD[id];
+  const files = rule.multiple ? "More than one file" : "One archive";
+  if (!rule.label) return `${files}. No published size cap.`;
+  return rule.multiple ? `${files}, up to ${rule.label} each.` : `${files}, up to ${rule.label}.`;
+}
+
+export function uploadHint(rule: UploadRule): string {
+  if (rule.hosts === 0) return "One archive. Add a host key to set a size limit.";
+  const count = rule.multiple ? "More than one file is allowed." : "One archive.";
+  const size = rule.label ? ` Largest file ${rule.label}.` : " No size cap from these hosts.";
+  return count + size;
+}
+
+export function acceptFiles(
+  files: { name: string; size: number }[],
+  rule: UploadRule,
+  version: string,
+): { ok: true; fileName: string; version: string; size: number } | { ok: false; message: string } {
+  if (files.length === 0) return { ok: false, message: "" };
+  const chosen = rule.multiple ? files : files.slice(0, 1);
+  if (rule.maxBytes != null) {
+    const tooBig = chosen.find((file) => file.size > rule.maxBytes!);
+    if (tooBig) return { ok: false, message: `${tooBig.name} is over the ${rule.label} limit for the hosts on this mod.` };
+  }
+  const match = !version.trim() ? chosen[0]?.name.match(/(\d+\.\d+\.\d+)/) : null;
+  return {
+    ok: true,
+    fileName: chosen.map((file) => file.name).join(", "),
+    version: match?.[1] ?? version,
+    size: chosen.reduce((sum, file) => sum + file.size, 0),
+  };
+}

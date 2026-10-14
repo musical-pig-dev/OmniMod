@@ -51,7 +51,7 @@ export function createMod(name = "Untitled mod"): ModRecord {
     id,
     name,
     fileName: "",
-    version: "",
+    version: "0.0.1",
     changelog: "",
     configs: defaultConfigs(),
     publishedVersions: [],
@@ -92,6 +92,13 @@ export function versionUsed(publishedVersions: string[] | undefined, version: st
   return (publishedVersions ?? []).some((item) => item.trim() === key);
 }
 
+export function nextPatch(version: string): string {
+  const match = version.trim().match(/^(.*?)(\d+)([^\d]*)$/);
+  if (!match) return "";
+  const next = String(Number(match[2]) + 1).padStart(match[2].length, "0");
+  return `${match[1]}${next}${match[3]}`;
+}
+
 export function lastPublished(publishedVersions: string[] | undefined): string {
   const versions = publishedVersions ?? [];
   for (let index = versions.length - 1; index >= 0; index -= 1) {
@@ -110,7 +117,7 @@ export function recordPublish<T extends { fileName: string; version: string; cha
   const key = version.trim();
   const publishedVersions =
     key && !versionUsed(mod.publishedVersions, key) ? [...mod.publishedVersions, key] : mod.publishedVersions;
-  return { ...mod, fileName: "", version: "", changelog: "", publishedVersions };
+  return { ...mod, fileName: "", version: nextPatch(key), changelog: "", publishedVersions };
 }
 
 export function targetsFromConfigs(configs: ConfigMap): TargetMap {
