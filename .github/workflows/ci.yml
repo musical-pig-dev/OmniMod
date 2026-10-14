@@ -44,8 +44,8 @@ jobs:
       - run: npm test
 
   extension:
-    needs: gate
-    if: needs.gate.outputs.decision == 'build-extension'
+    needs: [gate, test]
+    if: always() && needs.gate.result == 'success' && needs.gate.outputs.decision == 'build-extension' && (needs.test.result == 'success' || needs.test.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
