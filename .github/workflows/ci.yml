@@ -61,6 +61,30 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Choose the next patch
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          current=$(node -p "require('./browsers/chrome/public/manifest.json').version")
+          tags=$(gh release list --limit 200 --json tagName --jq '[.[].tagName] | join(" ")')
+          version=$(CURRENT="$current" TAGS="$tags" node --experimental-strip-types --input-type=module -e '
+            import { nextFreeVersion } from "./src/lib/omnimod/mods.ts";
+            const next = nextFreeVersion(process.env.CURRENT ?? "", (process.env.TAGS ?? "").split(/\s+/).filter(Boolean));
+            if (!next) {
+              console.error("Could not choose the next patch.");
+              process.exit(1);
+            }
+            process.stdout.write(next);
+          ')
+          node -e '
+            const fs = require("fs");
+            const path = "browsers/chrome/public/manifest.json";
+            const manifest = JSON.parse(fs.readFileSync(path, "utf8"));
+            manifest.version = process.argv[1];
+            fs.writeFileSync(path, JSON.stringify(manifest, null, 2) + "\n");
+          ' "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Build the Chrome extension
         env:
           VITE_GIT_SHA: ${{ github.sha }}
@@ -72,9 +96,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          version=$(node -p "require('./browsers/chrome/public/manifest.json').version")
-          tag="v${version}-${GITHUB_SHA::7}"
-          notes="Chrome extension ${version} built from ${GITHUB_SHA}."
+          version="${{ steps.version.outputs.version }}"
+          tag="v${version}"
+          notes="Chrome extension ${version}."
           gh release create "$tag" omnimod-chrome.zip \
             --target "$GITHUB_SHA" \
             --title "OmniMod ${tag}" \

@@ -92,6 +92,17 @@ export function versionUsed(publishedVersions: string[] | undefined, version: st
   return (publishedVersions ?? []).some((item) => item.trim() === key);
 }
 
+export function nextFreeVersion(current: string, taken: readonly string[]): string {
+  const used = new Set(taken.map((tag) => tag.trim().replace(/^v/, "")));
+  let version = current.trim();
+  while (used.has(version)) {
+    const next = nextPatch(version);
+    if (!next) return "";
+    version = next;
+  }
+  return version;
+}
+
 export function nextPatch(version: string): string {
   const match = version.trim().match(/^(.*?)(\d+)([^\d]*)$/);
   if (!match) return "";

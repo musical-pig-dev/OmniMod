@@ -6,6 +6,7 @@ import {
   emptyTargets,
   hydrateMod,
   lastPublished,
+  nextFreeVersion,
   nextPatch,
   mergeAccount,
   modId,
@@ -116,6 +117,10 @@ describe("mods", () => {
     assert.equal(nextPatch("1.02"), "1.03");
     assert.equal(nextPatch("beta"), "");
     assert.equal(nextPatch("  "), "");
+    assert.equal(nextFreeVersion("0.1.0", []), "0.1.0");
+    assert.equal(nextFreeVersion("0.1.0", ["v0.1.0"]), "0.1.1");
+    assert.equal(nextFreeVersion("0.1.0", ["v0.1.0", "0.1.1"]), "0.1.2");
+    assert.equal(nextFreeVersion("beta", ["beta"]), "");
   });
 
   it("keeps published versions when a saved mod is loaded", () => {

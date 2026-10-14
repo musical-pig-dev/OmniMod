@@ -57,7 +57,7 @@ async function publishNexus(
   const put = await fetchImpl(target, {
     method: "PUT",
     headers: { "content-disposition": `attachment; filename="${filename}"` },
-    body: new Blob([await file.arrayBuffer()]),
+    body: new Uint8Array(await file.arrayBuffer()),
   });
   if (!put.ok) return { ok: false, message: await errorText(put) };
   const finalised = await fetchImpl(`${NEXUS}/uploads/${uploadId}/finalise`, {
