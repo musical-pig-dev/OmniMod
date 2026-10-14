@@ -12,7 +12,7 @@ const input = {
 function withReady(ids: PlatformId[]): ConfigMap {
   const configs = defaultConfigs();
   const fieldsById: Record<PlatformId, Record<string, string>> = {
-    nexus: { apiKey: "k", modId: "1" },
+    nexus: { apiKey: "k", gameDomain: "site", modId: "1" },
     curseforge: { token: "t", projectId: "2" },
     modrinth: { token: "t", project: "slug" },
     github: { token: "t", repo: "a/b" },

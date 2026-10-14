@@ -30,11 +30,12 @@ export const PLATFORMS: Platform[] = [
   {
     id: "nexus",
     name: "Nexus Mods",
-    summary: "Upload API. A personal API key and the existing mod id.",
+    summary: "Upload API. A personal API key, the game from the URL, and the existing mod id.",
     tokenUrl: "https://www.nexusmods.com/",
     tokenLabel: "Open Nexus Mods",
     fields: [
       { key: "apiKey", label: "API key", secret: true, placeholder: "Your Nexus API key" },
+      { key: "gameDomain", label: "Game domain", placeholder: "skyrimspecialedition" },
       { key: "modId", label: "Mod ID", placeholder: "123456" },
     ],
   },

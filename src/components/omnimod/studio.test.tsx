@@ -54,6 +54,7 @@ describe("Studio", () => {
     await user.click(screen.getByRole("button", { name: /Hosts/ }));
     await user.click(screen.getByRole("button", { name: /Nexus Mods/ }));
     await typeField(user, "API key", "secret");
+    await typeField(user, "Game domain", "site");
     await typeField(user, "Mod ID", "1");
     await user.click(screen.getByRole("button", { name: /Hosts/ }));
     const input = document.querySelector('input[type="file"]') as HTMLInputElement;
@@ -227,6 +228,7 @@ describe("Studio", () => {
     expect(screen.getByLabelText("API key")).toHaveProperty("value", "");
     expect(screen.getByLabelText("Mod ID")).toHaveProperty("value", "");
     await typeField(user, "API key", "secret");
+    await typeField(user, "Game domain", "site");
     await typeField(user, "Mod ID", "1");
     await user.click(screen.getByRole("button", { name: /GitHub Releases/ }));
     await user.click(screen.getByRole("button", { name: /GitHub Releases/ }));

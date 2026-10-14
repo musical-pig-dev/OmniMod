@@ -68,6 +68,7 @@ describe("live transport", () => {
   it("publishes to each host and reports their refusals", async () => {
     const calls: string[] = [];
     const forms: string[] = [];
+    const posted: string[] = [];
     const fetchImpl: typeof fetch = async (url, init) => {
       const target = String(url);
       calls.push(`${init?.method ?? "GET"} ${target}`);
@@ -83,7 +84,15 @@ describe("live transport", () => {
           data: { state: calls.filter((call) => call.includes("/uploads/up-1")).length > 1 ? "available" : "processing" },
         });
       }
-      if (target.endsWith("/mod-files")) return jsonResponse({ data: { id: "file-1" } }, 201);
+      if (target.includes("/games/") && target.includes("/mods/")) {
+        if (target.endsWith("/mods/missing")) return jsonResponse({ data: {} });
+        if (target.includes("/games/gone/")) return jsonResponse({ message: "mod not found" }, 404);
+        return jsonResponse({ data: { id: "internal-12" } });
+      }
+      if (target.endsWith("/mod-files")) {
+        posted.push(String(init?.body ?? ""));
+        return jsonResponse({ data: { id: "file-1" } }, 201);
+      }
       if (target.includes("upload.curseforge.com")) return jsonResponse({ id: 9 });
       if (target.includes("api.modrinth.com")) return jsonResponse({ id: "ver" }, 200);
       if (target.includes("api.github.com") && init?.method === "POST") {
@@ -94,8 +103,14 @@ describe("live transport", () => {
       return jsonResponse({ message: "no" }, 500);
     };
     const transport = host(fetchImpl);
-    assert.equal((await transport("nexus", input({ apiKey: "k", modId: "12" }, { fileName: "bad [name].zip" }))).ok, true);
-    assert.equal((await transport("nexus", input(undefined, { fileName: "###" }))).ok, true);
+    assert.equal((await transport("nexus", input({ apiKey: "k", gameDomain: "site", modId: "12" }, { fileName: "bad [name].zip" }))).ok, true);
+    assert.match(posted[0] ?? "", /"mod_id":"internal-12"/);
+    assert.equal((await transport("nexus", input({ apiKey: "k", gameDomain: "site", modId: "12" }, { fileName: "###" }))).ok, true);
+    assert.match((await transport("nexus", input({ apiKey: "k", modId: "12" }))).message ?? "", /game domain/);
+    assert.match((await transport("nexus", input({ apiKey: "k", gameDomain: "site" }))).message ?? "", /game domain/);
+    assert.match((await transport("nexus", input({ apiKey: "k", gameDomain: "site", modId: "missing" }))).message ?? "", /no id/);
+    assert.equal((await transport("nexus", input({ gameDomain: "site", modId: "12" }))).ok, true);
+    assert.match((await transport("nexus", input({ apiKey: "k", gameDomain: "gone", modId: "12" }))).message ?? "", /mod not found/);
     assert.equal((await transport("curseforge", input({ token: "t", projectId: "9" }))).ok, true);
     assert.equal((await transport("curseforge", input({}))).ok, true);
     assert.equal((await transport("modrinth", input({ token: "mrp", project: "lanterns" }))).ok, true);
@@ -185,6 +200,7 @@ describe("live transport", () => {
         if (target.includes("files.example")) return partResponse();
         if (target.endsWith("/finalise")) return jsonResponse({ data: { state: "processing" } });
         if (target.endsWith("/uploads/up")) return jsonResponse({ data: { state: "available" } });
+        if (target.includes("/games/") && target.includes("/mods/")) return jsonResponse({ data: { id: "internal-1" } });
         return jsonResponse({ message: "mod id is not a uuid" }, 422);
       }
       if (mode.value === "nullbody") return new Response("null", { status: 201, headers: { "content-type": "application/json" } });
@@ -235,7 +251,7 @@ describe("live transport", () => {
     mode.value = "asset";
     assert.match((await transport("github", input({ token: "t", repo: "a/b" }))).message ?? "", /asset rejected/);
     mode.value = "publish";
-    assert.match((await transport("nexus", input({ apiKey: "k", modId: "1" }, { fileName: "   " }))).message ?? "", /uuid/);
+    assert.match((await transport("nexus", input({ apiKey: "k", gameDomain: "site", modId: "1" }, { fileName: "   " }))).message ?? "", /uuid/);
     mode.value = "nullbody";
     assert.match((await transport("nexus", input({ apiKey: "k", modId: "1" }))).message ?? "", /upload slot/);
     mode.value = "nourl";

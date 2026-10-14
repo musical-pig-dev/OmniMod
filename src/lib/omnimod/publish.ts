@@ -146,6 +146,7 @@ const PRACTICE: Record<string, string> = {
   apiKey: "practice-nexus-key",
   token: "practice-token",
   modId: "104822",
+  gameDomain: "skyrimspecialedition",
   projectId: "88211",
   project: "weathered-lanterns",
   repo: "studio/weathered-lanterns",

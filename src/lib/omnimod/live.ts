@@ -88,12 +88,23 @@ async function publishNexus(
   if (!finalised.ok) return { ok: false, message: await errorText(finalised) };
   const ready = await waitForNexus(fetchImpl, uploadId, fields.apiKey ?? "", pause);
   if (!ready.ok) return ready;
+  const game = (fields.gameDomain ?? "").trim();
+  const scoped = (fields.modId ?? "").trim();
+  if (!game || !scoped) {
+    return { ok: false, message: "Nexus needs the game domain and mod ID from the mod URL." };
+  }
+  const looked = await fetchImpl(`${NEXUS}/games/${encodeURIComponent(game)}/mods/${encodeURIComponent(scoped)}`, {
+    headers: nexusHeaders(apiKey),
+  });
+  if (!looked.ok) return { ok: false, message: await errorText(looked) };
+  const internalId = String(dataOf(await looked.json()).id ?? "");
+  if (!internalId) return { ok: false, message: "Nexus mod lookup returned no id." };
   const published = await fetchImpl(`${NEXUS}/mod-files`, {
     method: "POST",
     headers: { ...nexusHeaders(fields.apiKey ?? ""), "content-type": "application/json" },
     body: JSON.stringify({
       upload_id: uploadId,
-      mod_id: (fields.modId ?? "").trim(),
+      mod_id: internalId,
       name: filename,
       version: input.version.trim(),
       description: input.changelog.trim(),
