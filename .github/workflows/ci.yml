@@ -6,43 +6,61 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+  checks: read
+  actions: read
+
 jobs:
   gate:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     outputs:
-      run_tests: ${{ steps.decide.outputs.run_tests }}
-      build: ${{ steps.decide.outputs.build }}
+      decision: ${{ steps.decide.outputs.decision }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - id: decide
-        run: |
-          node scripts/main-decision.ts
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Decide whether main can skip tests
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: node scripts/main-decision.mjs
 
   test:
     needs: gate
-    if: needs.gate.outputs.run_tests == 'true'
+    if: always() && (github.event_name == 'pull_request' || needs.gate.outputs.decision == 'run-tests') && (needs.gate.result == 'success' || needs.gate.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
       - run: npm ci
-      - run: npm run test:coverage
+      - run: npm test
 
   extension:
-    needs: [gate, test]
-    if: always() && needs.gate.outputs.build == 'true' && (needs.test.result == 'success' || needs.test.result == 'skipped')
+    needs: gate
+    if: needs.gate.outputs.decision == 'build-extension'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
       - run: npm ci
-      - run: npm run build:chrome
+      - name: Build the Chrome extension
         env:
           VITE_GIT_SHA: ${{ github.sha }}
           VITE_GITHUB_REPOSITORY: ${{ github.repository }}
+        run: npm run build:chrome
+      - uses: actions/upload-artifact@v4
+        with:
+          name: omnimod-chrome
+          path: dist/chrome
