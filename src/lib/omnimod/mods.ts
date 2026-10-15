@@ -18,6 +18,8 @@ export type ModRecord = {
   configs: ConfigMap;
   publishedVersions: string[];
   curseforgeOverride: Record<string, string>;
+  autoZip: boolean;
+  zipName: string;
 };
 
 export type StoredMod = Partial<ModRecord> & {
@@ -25,14 +27,11 @@ export type StoredMod = Partial<ModRecord> & {
 };
 
 export function emptyTargets(): TargetMap {
-  return {
-    nexus: {},
-    curseforge: {},
-    modrinth: {},
-    github: {},
-    thunderstore: {},
-    steam: {},
-  };
+  const targets = {} as TargetMap;
+  for (const id of ["nexus", "curseforge", "modrinth", "github", "thunderstore", "steam", "basedmods", "ayakamods", "afkmods", "moddinghaven", "laxmods", "moddb"] as const) {
+    targets[id] = {};
+  }
+  return targets;
 }
 
 export function nameTaken(mods: { id?: string; name: string }[], name: string, exceptId?: string): boolean {
@@ -57,6 +56,8 @@ export function createMod(name = "Untitled mod"): ModRecord {
     configs: defaultConfigs(),
     publishedVersions: [],
     curseforgeOverride: {},
+    autoZip: false,
+    zipName: "",
   };
 }
 
@@ -95,6 +96,8 @@ export function hydrateMod(raw: StoredMod, account: ConfigMap): ModRecord {
     configs,
     publishedVersions: Array.isArray(raw.publishedVersions) ? raw.publishedVersions.filter((item) => item.trim()) : [],
     curseforgeOverride: curseOverride(raw.curseforgeOverride),
+    autoZip: raw.autoZip === true,
+    zipName: typeof raw.zipName === "string" ? raw.zipName : "",
   };
 }
 

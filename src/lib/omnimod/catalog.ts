@@ -5,6 +5,12 @@ export const PLATFORM_IDS = [
   "thunderstore",
   "curseforge",
   "steam",
+  "basedmods",
+  "ayakamods",
+  "afkmods",
+  "moddinghaven",
+  "laxmods",
+  "moddb",
 ] as const;
 
 export type PlatformId = (typeof PLATFORM_IDS)[number];
@@ -30,6 +36,7 @@ export type Platform = {
   lane: HostLane;
   later?: boolean;
   accepts?: string[];
+  site?: string;
   tokenUrl?: string;
   tokenLabel?: string;
   fields: PlatformField[];
@@ -144,10 +151,65 @@ export const PLATFORMS: Platform[] = [
     summary: "Not available until a later date. A local helper will upload to Workshop.",
     lane: "later",
     later: true,
+    site: "https://steamcommunity.com/workshop/",
     fields: [
       { key: "appId", label: "App ID", placeholder: "480" },
       { key: "itemId", label: "Workshop item ID", placeholder: "1234567890" },
     ],
+  },
+  {
+    id: "basedmods",
+    name: "Basedmods",
+    summary: "Permanent archive for video game mods. No download caps. Prohibits adult/NSFW content.",
+    lane: "later",
+    later: true,
+    site: "https://basedmods.org",
+    fields: [],
+  },
+  {
+    id: "ayakamods",
+    name: "AyakaMods",
+    summary: "Community-driven alternative built by modders. Hosts gameplay adjustments, UI fixes, and skin swaps.",
+    lane: "later",
+    later: true,
+    site: "https://ayakamods.com",
+    fields: [],
+  },
+  {
+    id: "afkmods",
+    name: "AFK Mods",
+    summary: "Long-standing curated site. Elder Scrolls and Fallout focused.",
+    lane: "later",
+    later: true,
+    site: "https://www.afkmods.com",
+    fields: [],
+  },
+  {
+    id: "moddinghaven",
+    name: "Modding Haven",
+    summary: "Community hub that hosts independent archives and files. Emphasizes user ownership of mod files.",
+    lane: "later",
+    later: true,
+    site: "https://moddinghaven.com",
+    fields: [],
+  },
+  {
+    id: "laxmods",
+    name: "LaxMods",
+    summary: "Independent archive for mainstream game modifications.",
+    lane: "later",
+    later: true,
+    site: "https://laxmods.su",
+    fields: [],
+  },
+  {
+    id: "moddb",
+    name: "Mod DB",
+    summary: "Independent PC modding site. Standard community content and total conversions.",
+    lane: "later",
+    later: true,
+    site: "https://www.moddb.com",
+    fields: [],
   },
 ];
 
@@ -163,14 +225,9 @@ export function emptyConfig(): PlatformConfig {
 }
 
 export function defaultConfigs(): ConfigMap {
-  return {
-    nexus: emptyConfig(),
-    curseforge: emptyConfig(),
-    modrinth: emptyConfig(),
-    github: emptyConfig(),
-    thunderstore: emptyConfig(),
-    steam: emptyConfig(),
-  };
+  const configs = {} as ConfigMap;
+  for (const platform of PLATFORMS) configs[platform.id] = emptyConfig();
+  return configs;
 }
 
 export function platformById(id: PlatformId): Platform {
@@ -221,6 +278,12 @@ const HOST_UPLOAD: Record<PlatformId, HostUpload> = {
   thunderstore: { maxBytes: 5_242_880_000, label: "5 GB", multiple: false },
   nexus: { maxBytes: null, label: "", multiple: false },
   steam: { maxBytes: null, label: "", multiple: false },
+  basedmods: { maxBytes: null, label: "", multiple: false },
+  ayakamods: { maxBytes: null, label: "", multiple: false },
+  afkmods: { maxBytes: null, label: "", multiple: false },
+  moddinghaven: { maxBytes: null, label: "", multiple: false },
+  laxmods: { maxBytes: null, label: "", multiple: false },
+  moddb: { maxBytes: null, label: "", multiple: false },
 };
 
 export type UploadRule = {
@@ -255,14 +318,20 @@ export function typeLock(configs: ConfigMap): string[] | null {
   return lists.reduce((shared, list) => shared.filter((ext) => list.includes(ext)));
 }
 
-export function typeBlock(platform: Platform, configs: ConfigMap, fileName: string): string | null {
+export function hostTakesOne(id: PlatformId): boolean {
+  return !HOST_UPLOAD[id].multiple;
+}
+
+export function typeBlock(platform: Platform, configs: ConfigMap, fileName: string, autoZip = false): string | null {
   if (platform.lane === "later") return null;
   const accepts = platform.accepts;
   const ext = fileExtension(fileName);
   if (ext) {
     if (!accepts?.length || accepts.includes(ext)) return null;
+    if (autoZip && accepts.includes(".zip")) return null;
     return `Accepts ${accepts.join(", ")}. This file is ${ext}.`;
   }
+  if (autoZip && accepts?.includes(".zip")) return null;
   const lock = typeLock(configs);
   if (lock == null || !accepts?.length) return null;
   if (lock.length === 0) return "These hosts do not accept the same file type.";
@@ -270,11 +339,11 @@ export function typeBlock(platform: Platform, configs: ConfigMap, fileName: stri
   return `Accepts ${accepts.join(", ")}. The ready hosts need ${lock.join(", ")}.`;
 }
 
-export function curseForgeOnForm(configs: ConfigMap, fileName: string): boolean {
+export function curseForgeOnForm(configs: ConfigMap, fileName: string, autoZip = false): boolean {
   const platform = platformById("curseforge");
   const config = configs.curseforge;
   if (!config.enabled || !isConfigured(platform, config)) return false;
-  return !typeBlock(platform, configs, fileName);
+  return !typeBlock(platform, configs, fileName, autoZip);
 }
 
 function ruleExtensions(configs: ConfigMap): string[] | null {
@@ -290,13 +359,13 @@ function ruleExtensions(configs: ConfigMap): string[] | null {
   return lock;
 }
 
-export function uploadRule(configs: ConfigMap, fileName = ""): UploadRule {
+export function uploadRule(configs: ConfigMap, fileName = "", autoZip = false): UploadRule {
   const extensions = ruleExtensions(configs);
   const hosts = PLATFORMS.filter((platform) => {
     if (platform.lane !== "api") return false;
     const config = configs[platform.id];
     if (!config.enabled || !isConfigured(platform, config)) return false;
-    return !typeBlock(platform, configs, fileName);
+    return !typeBlock(platform, configs, fileName, autoZip);
   });
   if (hosts.length === 0) return { hosts: 0, maxBytes: null, label: "", multiple: false, extensions };
   let maxBytes: number | null = null;
@@ -326,7 +395,7 @@ export function hostLimitDetail(id: PlatformId): string {
 }
 
 export function uploadHint(rule: UploadRule): string {
-  if (rule.hosts === 0) return "One archive. Add a host key to set a size limit.";
+  if (rule.hosts === 0) return "Add a host key to set a size limit.";
   const count = rule.multiple ? "More than one file is allowed." : "One archive.";
   const size = rule.label ? ` Largest file ${rule.label}.` : " No size cap from these hosts.";
   return count + size;
@@ -336,14 +405,19 @@ export function acceptFiles(
   files: { name: string; size: number }[],
   rule: UploadRule,
   version: string,
+  autoZip = false,
 ): { ok: true; fileName: string; version: string; size: number } | { ok: false; message: string } {
   if (files.length === 0) return { ok: false, message: "" };
-  if (rule.extensions && rule.extensions.length === 0) {
+  if (!autoZip && rule.extensions && rule.extensions.length === 0) {
     return { ok: false, message: "These hosts do not accept the same file type." };
   }
-  const chosen = rule.multiple ? files : files.slice(0, 1);
-  if (rule.extensions) {
-    const wrong = chosen.find((file) => !rule.extensions!.includes(fileExtension(file.name)));
+  const chosen = autoZip || rule.multiple ? files : files.slice(0, 1);
+  if (rule.extensions && rule.extensions.length > 0) {
+    const wrong = chosen.find((file) => {
+      const ext = fileExtension(file.name);
+      if (rule.extensions!.includes(ext)) return false;
+      return !(autoZip && (ext === ".zip" || rule.extensions!.includes(".zip")));
+    });
     if (wrong) {
       return { ok: false, message: `${wrong.name} is not accepted. These hosts need ${rule.extensions.join(", ")}.` };
     }

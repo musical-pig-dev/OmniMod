@@ -218,5 +218,47 @@ describe("catalog", () => {
     assert.equal(curseForgeOnForm(configs, "a.zip"), true);
     assert.equal(curseForgeOnForm(configs, "a.jar"), true);
     assert.equal(curseForgeOnForm(configs, "notes.txt"), false);
+    assert.equal(curseForgeOnForm(configs, "notes.txt", true), true);
+    assert.equal(typeBlock(platformById("nexus"), configs, "mod.jar", true), null);
+    assert.equal(typeBlock(platformById("modrinth"), configs, "notes.txt", true), "Accepts .jar. This file is .txt.");
+    assert.equal(typeBlock(platformById("github"), defaultConfigs(), "", true), null);
+    const jarHost = defaultConfigs();
+    jarHost.modrinth = {
+      enabled: true,
+      fields: Object.fromEntries(platformById("modrinth").fields.map((field) => [field.key, "set"])),
+    };
+    assert.equal(typeBlock(platformById("nexus"), jarHost, "", true), null);
+    assert.equal(typeBlock(platformById("modrinth"), jarHost, "", true), null);
+    const nexusOnly = defaultConfigs();
+    nexusOnly.nexus = {
+      enabled: true,
+      fields: Object.fromEntries(platformById("nexus").fields.map((field) => [field.key, "set"])),
+    };
+    const zipRule = uploadRule(nexusOnly, "", true);
+    const packed = acceptFiles(
+      [
+        { name: "mod.jar", size: 4 },
+        { name: "notes.txt", size: 4 },
+      ],
+      zipRule,
+      "",
+      true,
+    );
+    assert.equal(packed.ok && packed.fileName, "mod.jar, notes.txt");
+    const jars = uploadRule(jarHost);
+    const already = acceptFiles([{ name: "mod.zip", size: 4 }], jars, "", true);
+    assert.equal(already.ok && already.fileName, "mod.zip");
+    const rejected = acceptFiles([{ name: "notes.txt", size: 4 }], jars, "", true);
+    assert.equal(rejected.ok, false);
+    const open = acceptFiles([{ name: "notes.txt", size: 4 }], { ...jars, extensions: null }, "", true);
+    assert.equal(open.ok && open.fileName, "notes.txt");
+    const clash = defaultConfigs();
+    clash.modrinth = jarHost.modrinth;
+    clash.thunderstore = {
+      enabled: true,
+      fields: Object.fromEntries(platformById("thunderstore").fields.map((field) => [field.key, "set"])),
+    };
+    const clashPacked = acceptFiles([{ name: "notes.txt", size: 4 }], uploadRule(clash), "", true);
+    assert.equal(clashPacked.ok && clashPacked.fileName, "notes.txt");
   });
 });

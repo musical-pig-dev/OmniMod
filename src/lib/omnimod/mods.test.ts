@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import { defaultConfigs } from "./catalog.ts";
+import { PLATFORM_IDS, defaultConfigs } from "./catalog.ts";
 import {
   createMod,
   emptyTargets,
@@ -37,8 +37,10 @@ describe("mods", () => {
     const mod = createMod("Lanterns");
     assert.equal(mod.name, "Lanterns");
     assert.equal(mod.fileName, "");
+    assert.equal(mod.autoZip, false);
+    assert.equal(mod.zipName, "");
     assert.equal(mod.configs.github.fields.token ?? "", "");
-    assert.equal(Object.keys(mod.configs).length, 6);
+    assert.equal(Object.keys(mod.configs).length, PLATFORM_IDS.length);
   });
 
   it("copies account keys onto each mod separately", () => {
@@ -117,6 +119,12 @@ describe("mods", () => {
     const blank = hydrateMod({ name: "", publishedVersions: "nope" as never }, defaultConfigs());
     assert.equal(blank.name, "Untitled mod");
     assert.deepEqual(blank.publishedVersions, []);
+    const zipped = hydrateMod({ name: "Packed", autoZip: true, zipName: "Bundle.zip" }, defaultConfigs());
+    assert.equal(zipped.autoZip, true);
+    assert.equal(zipped.zipName, "Bundle.zip");
+    const loose = hydrateMod({ name: "Loose", autoZip: "yes" as never, zipName: 4 as never }, defaultConfigs());
+    assert.equal(loose.autoZip, false);
+    assert.equal(loose.zipName, "");
     assert.equal(versionUsed(undefined, "1.0.0"), false);
     assert.equal(lastPublished(undefined), "");
     assert.equal(lastPublished(["", " "]), "");

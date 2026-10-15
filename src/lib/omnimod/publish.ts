@@ -1,9 +1,11 @@
 import {
   PLATFORMS,
+  hostTakesOne,
   type ConfigMap,
   type PlatformId,
   isConfigured,
   platformById,
+  fileExtension,
   typeBlock,
 } from "./catalog.ts";
 
@@ -14,6 +16,8 @@ export type PublishInput = {
   override?: Record<string, string>;
   file?: Blob | null;
   fields?: Record<string, string>;
+  autoZip?: boolean;
+  zipName?: string;
 };
 
 export type SiteStatus = "skipped" | "success" | "error";
@@ -45,7 +49,7 @@ export function planPublish(configs: ConfigMap, input: PublishInput): PlanEntry[
     const config = configs[platform.id];
     if (platform.later) return { id: platform.id, action: "skip", reason: "later" };
     if (!config.enabled) return { id: platform.id, action: "skip", reason: "disabled" };
-    const blocked = typeBlock(platform, configs, input.fileName);
+    const blocked = typeBlock(platform, configs, input.fileName, Boolean(input.autoZip));
     if (blocked) return { id: platform.id, action: "skip", reason: "type", detail: blocked };
     if (!isConfigured(platform, config)) {
       return { id: platform.id, action: "skip", reason: "missing-credentials" };
@@ -81,11 +85,34 @@ export type PublishProgress = {
   failed?: number;
 };
 
+function preferZip(zip: Blob | null, file: Blob | null): Blob | null {
+  return zip ?? file;
+}
+
+export function deliveryFile(
+  id: PlatformId,
+  input: PublishInput,
+  file: Blob | null,
+  zip: Blob | null,
+  sources: { name: string; blob: Blob }[],
+): Blob | null {
+  if (!input.autoZip || sources.length === 0) return file;
+  const accepts = platformById(id).accepts;
+  const first = sources[0];
+  if (sources.length > 1 && hostTakesOne(id)) return preferZip(zip, file);
+  const ext = fileExtension(first.name);
+  if (!accepts || accepts.includes(ext)) return first.blob;
+  if (accepts.includes(".zip")) return preferZip(zip, file);
+  return file;
+}
+
 export async function runPublish(args: {
   input: PublishInput;
   configs: ConfigMap;
   transport: Transport;
   file?: Blob | null;
+  zip?: Blob | null;
+  sources?: { name: string; blob: Blob }[];
   onProgress?: (progress: PublishProgress) => void;
 }): Promise<SiteResult[]> {
   const plan = planPublish(args.configs, args.input);
@@ -115,7 +142,7 @@ export async function runPublish(args: {
       args.onProgress?.({ completed, total: queued.length, current: entry.id, failed });
       const response = await args.transport(entry.id, {
         ...args.input,
-        file: args.file ?? args.input.file ?? null,
+        file: deliveryFile(entry.id, args.input, args.file ?? args.input.file ?? null, args.zip ?? null, args.sources ?? []),
         fields: args.configs[entry.id].fields,
       });
       if (response.ok) {

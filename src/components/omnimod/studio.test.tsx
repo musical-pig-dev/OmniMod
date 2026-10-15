@@ -47,6 +47,23 @@ describe("Studio", () => {
     expect(screen.getByText("One archive, published to every host that is ready.")).toBeTruthy();
   });
 
+  it("switches between the form, the mods, and the hosts", async () => {
+    const user = userEvent.setup();
+    render(<Studio transport={ok} />);
+    expect(screen.getByRole("button", { name: "Form" })).toHaveProperty("disabled", true);
+    await addMod(user, "Lanterns");
+    expect(screen.getByRole("button", { name: "Form" })).toHaveProperty("disabled", false);
+    await user.click(screen.getByRole("button", { name: /Hosts/ }));
+    expect(screen.getByRole("heading", { name: "Later" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Form" }));
+    expect(screen.getByRole("textbox", { name: "Mod name" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Later" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "1" }));
+    expect(screen.getByRole("button", { name: "Add a mod" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Form" }));
+    expect(screen.queryByRole("button", { name: "Add a mod" })).toBeNull();
+  });
+
   it("publishes a package, clears the draft, and blocks the same version", async () => {
     const user = userEvent.setup();
     render(<Studio transport={ok} />);
@@ -206,6 +223,8 @@ describe("Studio", () => {
     fireEvent.drop(zone, { dataTransfer: { files: [zip("pack-9.9.9.zip")] } });
     expect(screen.getByDisplayValue("2.0.1")).toBeTruthy();
     expect(screen.queryByDisplayValue("9.9.9")).toBeNull();
+    fireEvent.drop(zone, { dataTransfer: { files: [zip("a, b.zip")] } });
+    expect(screen.getByText("a, b.zip")).toBeTruthy();
   });
 
   it("draws the delivery states", () => {
@@ -285,9 +304,11 @@ describe("Studio", () => {
     expect(screen.getByText("Already used")).toBeTruthy();
     fireEvent.blur(title);
     await user.click(screen.getByRole("button", { name: /Hosts/ }));
-    await user.selectOptions(screen.getByRole("combobox", { name: "Mod" }), screen.getByRole("option", { name: "Second" }));
+    await user.click(screen.getByRole("combobox", { name: "Mod" }));
+    await user.click(screen.getByRole("option", { name: "Second" }));
     expect(screen.getByText(/Second ·/)).toBeTruthy();
-    await user.selectOptions(screen.getByRole("combobox", { name: "Mod" }), screen.getByRole("option", { name: "Untitled mod" }));
+    await user.click(screen.getByRole("combobox", { name: "Mod" }));
+    await user.click(screen.getByRole("option", { name: "Untitled mod" }));
     await user.click(screen.getByRole("button", { name: /Hosts/ }));
     const publish = screen.getByRole("button", { name: /Publish to/ });
     await user.click(publish);
@@ -334,7 +355,8 @@ describe("Studio", () => {
     expect(screen.getByText(/Not available until a later date/)).toBeTruthy();
     expect(screen.getByRole("textbox", { name: "App ID" })).toHaveProperty("disabled", true);
     expect(screen.getByRole("combobox", { name: "Mode" })).toHaveProperty("disabled", true);
-    expect(screen.getByRole("combobox", { name: "Tone" })).toHaveProperty("value", "low");
+    expect(screen.getByRole("combobox", { name: "Mode" }).textContent).toContain("Choose");
+    expect(screen.getByRole("combobox", { name: "Tone" }).textContent).toContain("Low");
     expect(screen.getByText("One archive. No published size cap.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Clear" })).toHaveProperty("disabled", true);
   });
@@ -353,13 +375,17 @@ describe("Studio", () => {
     );
     expect(screen.getByText("Bot")).toBeTruthy();
     expect(screen.getByRole("link", { name: "Open CurseForge" }).getAttribute("href")).toBe("https://www.curseforge.com/");
-    expect(screen.getByRole("combobox", { name: "Release type" })).toHaveProperty("value", "beta");
-    expect(screen.getByRole("combobox", { name: "Publish when" })).toHaveProperty("value", "auto");
-    await user.selectOptions(screen.getByRole("combobox", { name: "Release type" }), "alpha");
+    expect(screen.getByRole("combobox", { name: "Release type" }).textContent).toContain("Beta");
+    expect(screen.getByRole("combobox", { name: "Publish when" }).textContent).toContain("When it is approved");
+    const release = screen.getByRole("combobox", { name: "Release type" });
+    await user.click(release);
+    await user.click(release);
+    await user.click(release);
+    await user.click(screen.getByRole("option", { name: "Alpha" }));
     expect(seen.at(-1)?.fields.releaseType).toBe("alpha");
   });
 
-  it("shows a view link only after a successful upload", () => {
+  it("shows the upload link only after a successful send", () => {
     render(
       <ResultSlip
         result={{
@@ -403,9 +429,12 @@ describe("Studio", () => {
     await user.type(screen.getByLabelText("Display name"), "Sample");
     await user.type(screen.getByLabelText("Game versions"), "26.3");
     await user.type(screen.getByLabelText("Relations"), "jei:requiredDependency");
-    await user.selectOptions(screen.getByLabelText("Release type"), "beta");
-    await user.selectOptions(screen.getByLabelText("Release type"), "");
-    await user.selectOptions(screen.getByLabelText("Publish when"), "manual");
+    await user.click(screen.getByLabelText("Release type"));
+    await user.click(screen.getByRole("option", { name: "Beta" }));
+    await user.click(screen.getByLabelText("Release type"));
+    await user.click(screen.getByRole("option", { name: "Host key" }));
+    await user.click(screen.getByLabelText("Publish when"));
+    await user.click(screen.getByRole("option", { name: "Keep it as a draft" }));
     await user.click(screen.getByRole("button", { name: "CurseForge", exact: true }));
     expect(screen.queryByText("Empty fields use the host key.")).toBeNull();
     const zone = screen.getByRole("button", { name: /Drop a zip/ });
@@ -414,7 +443,7 @@ describe("Studio", () => {
     fireEvent.drop(screen.getByRole("button", { name: /notes.txt/ }), { dataTransfer: { files: [zip("pack.zip")] } });
     await user.click(screen.getByRole("button", { name: "CurseForge", exact: true }));
     expect(screen.getByLabelText("Display name")).toHaveProperty("value", "Sample");
-    expect(screen.getByLabelText("Publish when")).toHaveProperty("value", "manual");
+    expect(screen.getByLabelText("Publish when").textContent).toContain("Keep it as a draft");
   });
 
   it("names an unknown host and ignores an empty file choice", async () => {
@@ -428,6 +457,106 @@ describe("Studio", () => {
     const input = document.querySelector('input[type="file"]') as HTMLInputElement;
     fireEvent.change(input, { target: { files: null } });
     expect(screen.getByDisplayValue("0.0.1")).toBeTruthy();
+  });
+
+  it("lists later hosts and packs files when auto-zip is on", async () => {
+    const user = userEvent.setup();
+    const seen: Blob[] = [];
+    const transport: Transport = async (_id, input) => {
+      if (input.file) seen.push(input.file);
+      return { ok: true };
+    };
+    render(<Studio transport={transport} />);
+    await addMod(user, "Lanterns");
+    await user.click(screen.getByRole("button", { name: /Hosts/ }));
+    expect(screen.getByRole("button", { name: "1" })).toBeTruthy();
+    expect(screen.queryByRole("textbox", { name: "App ID" })).toBeNull();
+    expect(screen.queryByRole("textbox", { name: "Zip name" })).toBeNull();
+    for (const href of [
+      "https://steamcommunity.com/workshop/",
+      "https://basedmods.org",
+      "https://ayakamods.com",
+      "https://www.afkmods.com",
+      "https://moddinghaven.com",
+      "https://laxmods.su",
+      "https://www.moddb.com",
+    ]) {
+      expect(screen.getByRole("link", { name: href }).getAttribute("href")).toBe(href);
+    }
+    await user.click(screen.getByRole("checkbox", { name: "Auto-zip" }));
+    expect(screen.getByText("Files that are not a zip are packed into one zip for hosts that need it.")).toBeTruthy();
+    await user.type(screen.getByRole("textbox", { name: "Zip name" }), "Bundle");
+    await user.click(screen.getByRole("button", { name: "1" }));
+    expect(screen.queryByRole("heading", { name: "Later" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Remove Lanterns" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "1" }));
+    expect(screen.getByRole("button", { name: /Drop files/ })).toBeTruthy();
+    const picker = document.querySelector('input[type="file"]') as HTMLInputElement;
+    expect(picker.multiple).toBe(true);
+    expect(picker.accept).toBe("");
+    await user.click(screen.getByRole("button", { name: /Hosts/ }));
+    await user.click(screen.getByRole("button", { name: /Thunderstore/ }));
+    await typeField(user, "Service token", "secret");
+    await typeField(user, "Team namespace", "Team");
+    await typeField(user, "Community", "riskofrain2");
+    await user.click(screen.getByRole("button", { name: /Hosts/ }));
+    fireEvent.drop(screen.getByRole("button", { name: /Drop files/ }), {
+      dataTransfer: { files: [new File(["jar"], "mod.jar")] },
+    });
+    await user.clear(screen.getByRole("textbox", { name: "Version *" }));
+    await user.type(screen.getByRole("textbox", { name: "Version *" }), "1.0.0");
+    await user.type(screen.getByRole("textbox", { name: "Changelog *" }), "Packed.");
+    await user.click(screen.getByRole("button", { name: "Publish to 1 host" }));
+    expect(screen.getByText("Bundle.zip")).toBeTruthy();
+    const packed = new Uint8Array(await seen[0].arrayBuffer());
+    expect(packed[0]).toBe(0x50);
+    expect(new TextDecoder().decode(packed)).toContain("mod.jar");
+    await user.click(screen.getByRole("button", { name: "Back to package" }));
+    await user.click(screen.getByRole("button", { name: /Hosts/ }));
+    await user.clear(screen.getByRole("textbox", { name: "Zip name" }));
+    await user.click(screen.getByRole("button", { name: /Hosts/ }));
+    fireEvent.drop(screen.getByRole("button", { name: /Drop files/ }), {
+      dataTransfer: { files: [new File(["a"], "a.jar"), new File(["b"], "b.txt")] },
+    });
+    await user.type(screen.getByRole("textbox", { name: "Changelog *" }), "Two.");
+    await user.click(screen.getByRole("button", { name: "Publish to 1 host" }));
+    expect(screen.getByText("a.zip")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Back to package" }));
+    const alone = new File(["zip"], "pack.zip");
+    fireEvent.drop(screen.getByRole("button", { name: /Drop files/ }), { dataTransfer: { files: [alone] } });
+    await user.type(screen.getByRole("textbox", { name: "Changelog *" }), "Same.");
+    await user.click(screen.getByRole("button", { name: "Publish to 1 host" }));
+    expect(screen.getByText("pack.zip")).toBeTruthy();
+    expect(seen[2]).toBe(alone);
+  });
+
+  it("publishes a saved name without a file when auto-zip is on", async () => {
+    const seen: Array<Blob | null> = [];
+    const transport: Transport = async (_id, input) => {
+      seen.push(input.file ?? null);
+      return { ok: true };
+    };
+    localStorage.setItem(
+      MODS_KEY,
+      JSON.stringify([
+        {
+          id: "saved",
+          name: "Lanterns",
+          fileName: "saved.jar",
+          version: "1.0.0",
+          changelog: "notes",
+          autoZip: true,
+          zipName: "",
+          configs: {
+            thunderstore: { enabled: true, fields: { token: "t", namespace: "Team", community: "riskofrain2" } },
+          },
+        },
+      ]),
+    );
+    render(<Studio transport={transport} />);
+    await userEvent.click(await screen.findByRole("button", { name: "Publish to 1 host" }));
+    expect(screen.getByText("Delivered")).toBeTruthy();
+    expect(seen).toEqual([null]);
   });
 
   it("stays locked when the vault record disappears", async () => {

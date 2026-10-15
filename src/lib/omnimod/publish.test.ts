@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import { defaultConfigs, type ConfigMap, type PlatformId } from "./catalog.ts";
+import { PLATFORMS, defaultConfigs, type ConfigMap, type PlatformId } from "./catalog.ts";
 import {
   curseForgeDocumentToken,
   curseForgeFileBody,
@@ -8,6 +8,7 @@ import {
   curseForgeTab,
   curseForgeViewUrl,
   curseVersionCatalog,
+  deliveryFile,
   fillCurseForgePage,
   planPublish,
   practiceFields,
@@ -15,6 +16,7 @@ import {
   readyCount,
   resolveCurseVersionIds,
   runPublish,
+  type PublishInput,
   type Transport,
 } from "./publish.ts";
 
@@ -33,6 +35,12 @@ function withReady(ids: PlatformId[]): ConfigMap {
     github: { token: "t", repo: "a/b" },
     thunderstore: { token: "t", namespace: "Team", community: "riskofrain2" },
     steam: { appId: "480", itemId: "9" },
+    basedmods: {},
+    ayakamods: {},
+    afkmods: {},
+    moddinghaven: {},
+    laxmods: {},
+    moddb: {},
   };
   for (const id of ids) {
     configs[id] = { enabled: true, fields: fieldsById[id] };
@@ -43,14 +51,13 @@ function withReady(ids: PlatformId[]): ConfigMap {
 describe("planPublish", () => {
   it("skips every site when nothing is configured", () => {
     const plan = planPublish(defaultConfigs(), input);
-    assert.equal(plan.length, 6);
+    assert.equal(plan.length, PLATFORMS.length);
     assert.equal(plan.filter((entry) => entry.action === "skip" && entry.reason === "missing-credentials").length, 4);
     const modrinth = plan.find((entry) => entry.id === "modrinth");
     assert.equal(modrinth?.action, "skip");
     if (modrinth?.action === "skip") assert.equal(modrinth.reason, "type");
-    const steam = plan.find((entry) => entry.id === "steam");
-    assert.equal(steam?.action, "skip");
-    if (steam?.action === "skip") assert.equal(steam.reason, "later");
+    const later = plan.filter((entry) => entry.action === "skip" && entry.reason === "later").map((entry) => entry.id);
+    assert.deepEqual(later, ["steam", "basedmods", "ayakamods", "afkmods", "moddinghaven", "laxmods", "moddb"]);
     assert.equal(readyCount(defaultConfigs(), input), 0);
   });
 
@@ -128,7 +135,7 @@ describe("runPublish", () => {
     });
     assert.deepEqual(called, ["nexus"]);
     assert.equal(results.filter((result) => result.status === "success").length, 1);
-    assert.equal(results.filter((result) => result.status === "skipped").length, 5);
+    assert.equal(results.filter((result) => result.status === "skipped").length, PLATFORMS.length - 1);
     assert.match(results.find((result) => result.id === "curseforge")!.message, /needs account/i);
     assert.match(results.find((result) => result.id === "nexus")!.message, /accepted 1\.4\.2/);
   });
@@ -270,6 +277,59 @@ describe("runPublish", () => {
       transport: async () => ({ ok: true, url: "   " }),
     });
     assert.equal(blank.find((result) => result.id === "nexus")?.url, undefined);
+  });
+
+  it("sends a zip only to hosts that need one", async () => {
+    const jar = new Blob(["jar"]);
+    const other = new Blob(["other"]);
+    const packed = new Blob(["packed"]);
+    const original = new Blob(["original"]);
+    const base: PublishInput = { fileName: "mod.jar", version: "1.0.0", changelog: "notes", autoZip: true };
+    assert.equal(deliveryFile("nexus", { ...base, autoZip: false }, original, packed, [{ name: "mod.jar", blob: jar }]), original);
+    assert.equal(deliveryFile("nexus", base, original, packed, []), original);
+    assert.equal(deliveryFile("github", base, original, packed, [{ name: "mod.jar", blob: jar }]), jar);
+    assert.equal(deliveryFile("modrinth", base, original, packed, [{ name: "mod.jar", blob: jar }]), jar);
+    assert.equal(deliveryFile("nexus", base, original, packed, [{ name: "mod.jar", blob: jar }]), packed);
+    assert.equal(deliveryFile("nexus", base, original, null, [{ name: "mod.jar", blob: jar }]), original);
+    assert.equal(deliveryFile("modrinth", base, original, packed, [{ name: "notes.txt", blob: jar }]), original);
+    assert.equal(
+      deliveryFile("thunderstore", base, original, packed, [
+        { name: "a.jar", blob: jar },
+        { name: "b.txt", blob: other },
+      ]),
+      packed,
+    );
+    assert.equal(
+      deliveryFile("thunderstore", base, original, null, [
+        { name: "a.jar", blob: jar },
+        { name: "b.txt", blob: other },
+      ]),
+      original,
+    );
+    assert.equal(
+      deliveryFile("modrinth", base, original, packed, [
+        { name: "a.jar", blob: jar },
+        { name: "b.jar", blob: other },
+      ]),
+      jar,
+    );
+    const seen: Partial<Record<PlatformId, Blob | null>> = {};
+    const zipped = planPublish(withReady(["nexus"]), { ...base, fileName: "mod.jar" });
+    assert.equal(zipped.find((entry) => entry.id === "nexus")?.action, "publish");
+    await runPublish({
+      input: base,
+      configs: withReady(["nexus", "modrinth", "github"]),
+      file: original,
+      zip: packed,
+      sources: [{ name: "mod.jar", blob: jar }],
+      transport: async (id, next) => {
+        seen[id] = next.file ?? null;
+        return { ok: true };
+      },
+    });
+    assert.equal(seen.nexus, packed);
+    assert.equal(seen.modrinth, jar);
+    assert.equal(seen.github, jar);
   });
 });
 

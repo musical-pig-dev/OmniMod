@@ -15,11 +15,12 @@ import {
   PLATFORMS,
   acceptFiles,
   acceptLabel,
+  curseForgeOnForm,
   defaultConfigs,
+  fileExtension,
   hostLimitDetail,
   isConfigured,
   platformById,
-  curseForgeOnForm,
   typeBlock,
   uploadHint,
   uploadRule,
@@ -47,6 +48,7 @@ import {
 import { VAULT_KEY, importRecoveryKey, openVault, seal, type VaultPayload } from "@/lib/omnimod/vault";
 import { RevisionLink } from "@/components/omnimod/revision";
 import { ProtectKeys, UnlockKeys } from "@/components/omnimod/vault-lock";
+import { archiveName, makeZip } from "@/lib/omnimod/zip";
 
 import {
   readyCount,
@@ -136,6 +138,80 @@ export function ResultSlip({ result, index }: { result: SiteResult; index: numbe
   );
 }
 
+function FancySelect({
+  label,
+  value,
+  choices,
+  onChange,
+  disabled = false,
+  blank,
+  pill = false,
+}: {
+  label: string;
+  value: string;
+  choices: { value: string; label: string }[];
+  onChange: (value: string) => void;
+  disabled?: boolean;
+  blank?: string;
+  pill?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const match = choices.find((choice) => choice.value === value);
+  const shown = match?.label ?? blank ?? "Choose";
+  const item = (selected: boolean) =>
+    `flex min-h-11 w-full items-center gap-2 rounded-lg px-3 text-left text-sm ${
+      selected ? "bg-brass/15 text-brass" : "text-ivory hover:bg-ink"
+    }`;
+  return (
+    <div className={`relative ${pill ? "w-44 shrink-0" : ""}`}>
+      <button
+        type="button"
+        role="combobox"
+        aria-label={label}
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        disabled={disabled}
+        onClick={() => setOpen((current) => !current)}
+        className={`flex h-11 w-full items-center justify-between gap-2 border border-line bg-ink px-3 text-left text-sm outline-none hover:border-brass focus:border-brass disabled:cursor-not-allowed disabled:text-mist disabled:hover:border-line ${
+          pill ? "rounded-full" : "rounded-xl"
+        } ${disabled ? "text-mist" : "text-ivory"}`}
+      >
+        <span className="truncate">{shown}</span>
+        <ChevronDown className={`size-4 shrink-0 text-mist transition-transform ${open ? "rotate-180" : ""}`} aria-hidden="true" />
+      </button>
+      {open ? (
+        <ul
+          role="listbox"
+          aria-label={label}
+          className={`absolute z-30 mt-2 max-h-64 w-full overflow-y-auto rounded-xl border border-line bg-raised p-1 shadow-[0_16px_40px_rgba(0,0,0,0.35)] ${
+            pill ? "right-0" : ""
+          }`}
+        >
+          {blank ? (
+            <li>
+              <button type="button" role="option" aria-selected={value === ""} onClick={() => { onChange(""); setOpen(false); }} className={item(value === "")}>
+                <span className="min-w-0 flex-1 truncate">{blank}</span>
+                {value === "" ? <Check className="size-4 shrink-0" aria-hidden="true" /> : <span className="size-4 shrink-0" />}
+              </button>
+            </li>
+          ) : null}
+          {choices.map((choice) => {
+            const selected = choice.value === value;
+            return (
+              <li key={choice.value}>
+                <button type="button" role="option" aria-selected={selected} onClick={() => { onChange(choice.value); setOpen(false); }} className={item(selected)}>
+                  <span className="min-w-0 flex-1 truncate">{choice.label}</span>
+                  {selected ? <Check className="size-4 shrink-0" aria-hidden="true" /> : <span className="size-4 shrink-0" />}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
 export function SiteCard({
   platform,
   config,
@@ -192,30 +268,26 @@ export function SiteCard({
           {fields.map((field) => {
             const stored = (config.fields[field.key] ?? "").trim();
             return (
-              <label key={field.key} className="block">
+              <div key={field.key}>
                 <span className="mb-1.5 block text-sm text-mist">{field.label}</span>
                 {field.choices ? (
-                  <select
+                  <FancySelect
+                    label={field.label}
                     value={stored || field.defaultValue || ""}
                     disabled={locked}
-                    onChange={(event) =>
+                    choices={field.choices}
+                    onChange={(next) =>
                       onChange({
                         ...config,
-                        fields: { ...config.fields, [field.key]: event.target.value },
+                        fields: { ...config.fields, [field.key]: next },
                       })
                     }
-                    className="h-11 w-full rounded-xl border border-line bg-ink px-3 text-ivory outline-none focus:border-brass disabled:text-mist"
-                  >
-                    {field.choices.map((choice) => (
-                      <option key={choice.value} value={choice.value}>
-                        {choice.label}
-                      </option>
-                    ))}
-                  </select>
+                  />
                 ) : (
                   <input
                     type={field.secret ? "password" : "text"}
                     autoComplete="off"
+                    aria-label={field.label}
                     value={config.fields[field.key] ?? ""}
                     placeholder={field.placeholder}
                     disabled={locked}
@@ -228,7 +300,7 @@ export function SiteCard({
                     className="h-11 w-full rounded-xl border border-line bg-ink px-3 text-ivory outline-none placeholder:text-mist/70 focus:border-brass"
                   />
                 )}
-              </label>
+              </div>
             );
           })}
           <div className="flex flex-wrap items-center gap-3 pt-1">
@@ -284,30 +356,26 @@ function CurseForgeOverride({
         <div className="space-y-3 border-t border-line px-3 py-3">
           <p className="text-sm text-mist">Empty fields use the host key.</p>
           {fields.map((field) => (
-            <label key={field.key} className="block">
+            <div key={field.key}>
               <span className="mb-1.5 block text-sm text-mist">{field.label}</span>
               {field.choices ? (
-                <select
+                <FancySelect
+                  label={field.label}
                   value={value[field.key] ?? ""}
-                  onChange={(event) => onEdit({ ...value, [field.key]: event.target.value })}
-                  className="h-11 w-full rounded-xl border border-line bg-ink px-3 text-ivory outline-none focus:border-brass"
-                >
-                  <option value="">Host key</option>
-                  {field.choices.map((choice) => (
-                    <option key={choice.value} value={choice.value}>
-                      {choice.label}
-                    </option>
-                  ))}
-                </select>
+                  blank="Host key"
+                  choices={field.choices}
+                  onChange={(next) => onEdit({ ...value, [field.key]: next })}
+                />
               ) : (
                 <input
+                  aria-label={field.label}
                   value={value[field.key] ?? ""}
                   placeholder={field.placeholder}
                   onChange={(event) => onEdit({ ...value, [field.key]: event.target.value })}
                   className="h-11 w-full rounded-xl border border-line bg-ink px-3 text-ivory outline-none placeholder:text-mist/70 focus:border-brass"
                 />
               )}
-            </label>
+            </div>
           ))}
         </div>
       ) : null}
@@ -374,6 +442,7 @@ export function Delivery({
 export function Studio({ transport }: { transport?: Transport } = {}) {
   const fileRef = useRef<HTMLInputElement>(null);
   const packageFile = useRef<File | null>(null);
+  const packageFiles = useRef<File[]>([]);
   const vaultKey = useRef<CryptoKey | null>(null);
   const [hydrated, setHydrated] = useState(false);
   const [vault, setVault] = useState<"off" | "locked" | "open">("off");
@@ -403,6 +472,8 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
       version: active?.version ?? "",
       changelog: active?.changelog ?? "",
       override: active?.curseforgeOverride,
+      autoZip: active?.autoZip ?? false,
+      zipName: active?.zipName ?? "",
     }),
     [active],
   );
@@ -449,7 +520,7 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
   const visibleMods = mods.filter((mod) =>
     mods.length > 20 ? mod.name.toLowerCase().includes(query.trim().toLowerCase()) : true,
   );
-  const rule = uploadRule(hostConfigs, input.fileName);
+  const rule = uploadRule(hostConfigs, input.fileName, input.autoZip);
 
   function patchMod(id: string, partial: Partial<ModRecord>) {
     setMods((list) => list.map((mod) => (mod.id === id ? { ...mod, ...partial } : mod)));
@@ -464,14 +535,17 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
   function onFile(list: FileList | File[] | undefined) {
     const files = list ? [...list] : [];
     if (!files.length) return;
-    const accepted = acceptFiles(files, rule, active.version);
+    const accepted = acceptFiles(files, rule, active.version, active.autoZip);
     if (!accepted.ok) {
       setFileError(accepted.message);
       return;
     }
     setFileError(null);
-    const chosen = files.find((file) => file.name === accepted.fileName) ?? files[0];
-    packageFile.current = chosen;
+    const names = accepted.fileName.split(", ");
+    const chosen = files.filter((file) => names.includes(file.name));
+    const picked = chosen.length > 0 ? chosen : files;
+    packageFiles.current = picked;
+    packageFile.current = picked[0];
     patchMod(active.id, { fileName: accepted.fileName, version: accepted.version });
     setFileSize(accepted.size);
     setResults(null);
@@ -479,7 +553,20 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
 
   async function publish() {
     const version = input.version.trim();
-    setShippedName(input.fileName);
+    const sources = packageFiles.current;
+    let zip: File | null = null;
+    let label = input.fileName;
+    const first = sources[0];
+    if (input.autoZip && first && (sources.length > 1 || fileExtension(first.name) !== ".zip")) {
+      const entries = [];
+      for (const file of sources) entries.push({ name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) });
+      label = archiveName(
+        sources.map((file) => file.name),
+        input.zipName || "",
+      );
+      zip = makeZip(entries, label);
+    }
+    setShippedName(label);
     setRunning(true);
     setResults(null);
     setProgress({ completed: 0, total: ready, current: null });
@@ -487,6 +574,8 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
       const next = await runPublish({
         input,
         file: packageFile.current,
+        zip,
+        sources: sources.map((file) => ({ name: file.name, blob: file })),
         configs: hostConfigs,
         transport: selectTransport(transport),
         onProgress: setProgress,
@@ -494,6 +583,7 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
       setResults(next);
       if (next.some((result) => result.status === "success")) {
         packageFile.current = null;
+        packageFiles.current = [];
         const recorded = recordPublish(active!, version, true);
         patchMod(active!.id, {
           fileName: recorded.fileName,
@@ -512,6 +602,12 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
 
   const sent = results?.filter((result) => result.status === "success").length ?? 0;
   const failed = results?.filter((result) => result.status === "error").length ?? 0;
+  const formOn = Boolean(active) && !hostsOpen && !libraryOpen;
+  const modsOn = !hostsOpen && (libraryOpen || !active);
+  const tabFace = (on: boolean) =>
+    `inline-flex h-10 items-center justify-center gap-2 rounded-full px-3.5 text-sm font-medium transition-colors ${
+      on ? "bg-brass text-brass-ink" : "text-ivory hover:text-brass"
+    }`;
 
   return (
     <div className="min-h-screen overflow-x-hidden bg-ink text-ivory">
@@ -544,20 +640,47 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
               />
             </button>
           </div>
-          <button
-            type="button"
-            aria-expanded={hostsOpen}
-            onClick={() => setHostsOpen((open) => !open)}
-            className={`inline-flex min-h-11 items-center gap-2 rounded-full border px-4 text-sm font-medium transition-colors ${
-              hostsOpen
-                ? "border-brass bg-brass text-brass-ink"
-                : "border-line bg-panel text-ivory hover:border-brass"
-            }`}
-          >
-            <KeyRound className={`size-4 ${hostsOpen ? "text-brass-ink" : ready > 0 ? "text-brass" : "text-brass/35"}`} aria-hidden="true" />
-            Hosts
-            <span className={hostsOpen ? "text-brass-ink/70" : "text-mist"}>{ready}</span>
-          </button>
+          <div className="inline-flex items-center rounded-full border border-line bg-panel p-1">
+            <button
+              type="button"
+              disabled={!active}
+              onClick={() => {
+                setHostsOpen(false);
+                setLibraryOpen(false);
+              }}
+              className={`${tabFace(formOn)} disabled:cursor-not-allowed disabled:text-mist disabled:hover:text-mist`}
+            >
+              Form
+            </button>
+            {progress ? null : (
+              <button
+                type="button"
+                aria-expanded={libraryOpen}
+                onClick={() => {
+                  if (hostsOpen) {
+                    setHostsOpen(false);
+                    setLibraryOpen(true);
+                    return;
+                  }
+                  setLibraryOpen((open) => !open);
+                }}
+                className={tabFace(modsOn)}
+              >
+                <Package className="size-4" aria-hidden="true" />
+                {mods.length}
+              </button>
+            )}
+            <button
+              type="button"
+              aria-expanded={hostsOpen}
+              onClick={() => setHostsOpen((open) => !open)}
+              className={tabFace(hostsOpen)}
+            >
+              <KeyRound className={`size-4 ${hostsOpen ? "text-brass-ink" : ready > 0 ? "text-brass" : "text-brass/35"}`} aria-hidden="true" />
+              Hosts
+              <span className={hostsOpen ? "text-brass-ink/70" : "text-mist"}>{ready}</span>
+            </button>
+          </div>
         </header>
 
         {vault === "locked" ? (
@@ -596,32 +719,52 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
                 {results ? ` · ${sent} sent${failed ? ` · ${failed} failed` : ""}` : ""}
               </p>
               {active ? (
-                <select
-                  aria-label="Mod"
+                <FancySelect
+                  pill
+                  label="Mod"
                   value={active.id}
-                  onChange={(event) => {
-                    setActiveId(event.target.value);
+                  choices={mods.map((mod) => ({ value: mod.id, label: mod.name }))}
+                  onChange={(id) => {
+                    setActiveId(id);
                     setOpenId(null);
                     setNameEdit(null);
                     setFileSize(null);
                     setResults(null);
                   }}
-                  className="h-11 max-w-[16rem] rounded-full border border-line bg-panel px-3 text-sm text-ivory outline-none focus:border-brass"
-                >
-                  {mods.map((mod) => (
-                    <option key={mod.id} value={mod.id}>
-                      {mod.name}
-                    </option>
-                  ))}
-                </select>
+                />
               ) : null}
             </div>
             <p className="px-1 text-sm text-mist">{uploadHint(rule)}</p>
-            {active
-              ? (["api", "bot", "later"] as const).map((lane) => (
+            {active ? (
+              <>
+                <div className="space-y-2 px-1">
+                  <label className="flex min-h-11 items-center gap-3 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={active.autoZip}
+                      onChange={(event) => patchMod(active.id, { autoZip: event.target.checked })}
+                    />
+                    Auto-zip
+                  </label>
+                  {active.autoZip ? (
+                    <>
+                      <input
+                        aria-label="Zip name"
+                        value={active.zipName}
+                        placeholder="First file name"
+                        onChange={(event) => patchMod(active.id, { zipName: event.target.value })}
+                        className="h-11 w-full rounded-xl border border-line bg-ink px-3 text-sm outline-none placeholder:text-mist/70 focus:border-brass"
+                      />
+                      <p className="text-sm text-mist">
+                        Files that are not a zip are packed into one zip for hosts that need it.
+                      </p>
+                    </>
+                  ) : null}
+                </div>
+                {(["api", "bot"] as const).map((lane) => (
                   <div key={lane} className="space-y-3">
                     <h3 className="px-1 pt-2 text-xs uppercase tracking-[0.16em] text-mist">
-                      {lane === "api" ? "API" : lane === "bot" ? "Bot" : "Later"}
+                      {lane === "api" ? "API" : "Bot"}
                     </h3>
                     {PLATFORMS.filter((platform) => platform.lane === lane).map((platform) => (
                       <SiteCard
@@ -629,7 +772,7 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
                         platform={platform}
                         config={active.configs[platform.id]}
                         open={openId === platform.id}
-                        blocked={typeBlock(platform, active.configs, active.fileName)}
+                        blocked={typeBlock(platform, active.configs, active.fileName, active.autoZip)}
                         onToggleOpen={() =>
                           setOpenId((current) => (current === platform.id ? null : platform.id))
                         }
@@ -637,8 +780,30 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
                       />
                     ))}
                   </div>
-                ))
-              : <p className="px-1 text-sm text-mist">Add a mod before saving host keys.</p>}
+                ))}
+                <div className="space-y-3">
+                  <h3 className="px-1 pt-2 text-xs uppercase tracking-[0.16em] text-mist">Later</h3>
+                  <ul className="space-y-2">
+                    {PLATFORMS.filter((platform) => platform.lane === "later").map((platform) => (
+                      <li key={platform.id} className="rounded-2xl border border-line bg-panel px-4 py-3">
+                        <p className="font-medium">{platform.name}</p>
+                        <p className="mt-1 text-sm text-mist">{platform.summary}</p>
+                        <a
+                          href={platform.site}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="mt-2 inline-flex min-h-11 items-center text-sm text-brass"
+                        >
+                          {platform.site}
+                        </a>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </>
+            ) : (
+              <p className="px-1 text-sm text-mist">Add a mod before saving host keys.</p>
+            )}
           </section>
         ) : null}
 
@@ -663,21 +828,7 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
                 ) : (
                   <h2 className="min-w-0 flex-1 font-display text-2xl">Mods</h2>
                 )}
-                {progress ? (
-                  <Package className="size-5 shrink-0 text-brass" aria-hidden="true" />
-                ) : (
-                  <button
-                    type="button"
-                    aria-expanded={libraryOpen}
-                    onClick={() => setLibraryOpen((open) => !open)}
-                    className={`inline-flex h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 rounded-full border px-3 text-sm ${
-                      libraryOpen ? "border-brass bg-brass text-brass-ink" : "border-line text-ivory hover:border-brass"
-                    }`}
-                  >
-                    <Package className="size-4" aria-hidden="true" />
-                    {mods.length}
-                  </button>
-                )}
+                {progress ? <Package className="size-5 shrink-0 text-brass" aria-hidden="true" /> : null}
               </div>
               {active && nameEdit !== null && nameTaken(mods, nameEdit, active.id) ? (
                 <p className="-mt-2 mb-3 text-sm text-bad">Already used</p>
@@ -829,15 +980,15 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
                     </span>
                   </>
                 ) : (
-                  <span className="font-medium">{rule.multiple ? "Drop files, or choose them" : "Drop a zip, or choose a file"}</span>
+                  <span className="font-medium">{active.autoZip || rule.multiple ? "Drop files, or choose them" : "Drop a zip, or choose a file"}</span>
                 )}
                 <span className="text-sm text-mist">{uploadHint(rule)}</span>
               </button>
               <input
                 ref={fileRef}
                 type="file"
-                accept={rule.extensions?.join(",") || ".zip,.7z,.rar,application/zip"}
-                multiple={rule.multiple}
+                accept={active.autoZip ? undefined : rule.extensions?.join(",") || ".zip,.7z,.rar,application/zip"}
+                multiple={active.autoZip || rule.multiple}
                 className="sr-only"
                 onChange={(event) => onFile(event.target.files ?? undefined)}
               />
@@ -869,7 +1020,7 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
                   className="w-full resize-y rounded-xl border border-line bg-ink px-3 py-3 leading-relaxed outline-none placeholder:text-mist/70 focus:border-brass"
                 />
               </label>
-              {curseForgeOnForm(hostConfigs, input.fileName) ? (
+              {curseForgeOnForm(hostConfigs, input.fileName, input.autoZip) ? (
                 <CurseForgeOverride
                   value={active.curseforgeOverride}
                   onEdit={(curseforgeOverride) => patchMod(active.id, { curseforgeOverride })}
