@@ -78,6 +78,7 @@ export type PublishProgress = {
   completed: number;
   total: number;
   current: PlatformId | null;
+  failed?: number;
 };
 
 export async function runPublish(args: {
@@ -91,10 +92,12 @@ export async function runPublish(args: {
   const results: SiteResult[] = [];
   const queued = plan.filter((entry) => entry.action === "publish");
   let completed = 0;
+  let failed = 0;
   args.onProgress?.({
     completed,
     total: queued.length,
     current: queued[0]?.id ?? null,
+    failed,
   });
 
   for (const entry of plan) {
@@ -109,7 +112,7 @@ export async function runPublish(args: {
     }
 
     try {
-      args.onProgress?.({ completed, total: queued.length, current: entry.id });
+      args.onProgress?.({ completed, total: queued.length, current: entry.id, failed });
       const response = await args.transport(entry.id, {
         ...args.input,
         file: args.file ?? args.input.file ?? null,
@@ -125,6 +128,7 @@ export async function runPublish(args: {
           ...(url ? { url } : {}),
         });
       } else {
+        failed += 1;
         results.push({
           id: entry.id,
           status: "error",
@@ -132,6 +136,7 @@ export async function runPublish(args: {
         });
       }
     } catch (error) {
+      failed += 1;
       const detail = error instanceof Error && error.message ? error.message : "Request failed.";
       results.push({
         id: entry.id,
@@ -144,6 +149,7 @@ export async function runPublish(args: {
       completed,
       total: queued.length,
       current: queued[completed]?.id ?? null,
+      failed,
     });
   }
 
@@ -398,4 +404,297 @@ export function curseForgeDocumentToken(status: number, body: string, contentTyp
   if (html) return true;
   if (status !== 401 && status !== 403) return false;
   return text.includes("token") || text.includes("login") || text.includes("antiforgery");
+}
+
+export type CurseFormValues = {
+  displayName: string;
+  manual: boolean;
+  versions: string[];
+  releaseType: string;
+  code: boolean;
+  relations: string[];
+  changelog: string;
+};
+
+export type CurseFormFill = CurseFormValues & {
+  fileName: string;
+  bytes: number[];
+  mime: string;
+  waitMs: number;
+  stepMs: number;
+};
+
+export type CurseFillResult = { ok: true; url: string } | { ok: false; message: string };
+
+const CURSE_AUTO = "Publish this file automatically once approved";
+const CURSE_MANUAL = "I would like to publish this file manually once approved";
+
+/** Field values for the authors form. A non-blank override wins. Names stay names. */
+export function curseForgeFormValues(args: {
+  changelog: string;
+  host: Record<string, string | undefined>;
+  override?: Record<string, string | undefined>;
+}): CurseFormValues {
+  const over = args.override ?? {};
+  const host = args.host;
+  const releaseKey = prefer(over.releaseType, host.releaseType, curseDefault("releaseType")).toLowerCase();
+  const changelogKey = prefer(over.changelogType, host.changelogType, curseDefault("changelogType")).toLowerCase();
+  const relations = parseCurseRelations(prefer(over.relations, host.relations)).map((item) =>
+    "slug" in item ? item.slug : String(item.projectId),
+  );
+  return {
+    displayName: prefer(over.displayName, host.displayName),
+    manual: prefer(over.publishWhen, host.publishWhen, curseDefault("publishWhen")) === "manual",
+    versions: commaList(prefer(over.gameVersions, host.gameVersions)),
+    releaseType: releaseKey === "beta" ? "Beta" : releaseKey === "alpha" ? "Alpha" : "Release",
+    code: changelogKey === "text" || changelogKey === "markdown",
+    relations,
+    changelog: args.changelog.trim(),
+  };
+}
+
+/**
+ * Fill the authors Upload New File form. Self-contained so the extension can
+ * run this function inside the CurseForge tab. No _api calls.
+ */
+export async function fillCurseForgePage(fill: CurseFormFill): Promise<CurseFillResult> {
+  const doc = document;
+  const waitMs = fill.waitMs;
+  const stepMs = fill.stepMs;
+
+  function plain(node: Node): string {
+    return (node.textContent as string).replace(/\s+/g, " ").trim();
+  }
+
+  function hrefOf(): string {
+    return doc.location.href;
+  }
+
+  function delay(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      setTimeout(resolve, ms);
+    });
+  }
+
+  function isLogin(): boolean {
+    if (/login|signin/i.test(hrefOf())) return true;
+    return /sign in/i.test(plain(doc.body)) && doc.querySelector("input[type='file']") == null;
+  }
+
+  function buttonNamed(label: string): HTMLButtonElement | null {
+    const wanted = label.toLowerCase();
+    for (const button of doc.querySelectorAll("button")) {
+      const text = plain(button).toLowerCase();
+      const aria = (button.getAttribute("aria-label") ?? "").toLowerCase();
+      if (text === wanted || text.includes(wanted) || aria.includes(wanted)) return button;
+    }
+    return null;
+  }
+
+  function heading(name: string): Element | null {
+    const wanted = name.toLowerCase();
+    const node = [...doc.querySelectorAll("label, legend, p, span, h2, h3")].find((item) => {
+      const text = plain(item).toLowerCase();
+      return text === wanted || text.startsWith(`${wanted} `) || text.startsWith(`${wanted}*`);
+    });
+    return node as Element;
+  }
+
+  function radioNamed(label: string): HTMLInputElement | null {
+    const wanted = label.toLowerCase();
+    for (const node of doc.querySelectorAll("label")) {
+      if (!plain(node).toLowerCase().includes(wanted)) continue;
+      const nested = node.querySelector("input[type='radio']");
+      if (nested instanceof HTMLInputElement) return nested;
+      continue;
+    }
+    return null;
+  }
+
+  function fieldInput(label: string): HTMLInputElement | null {
+    const wanted = label.toLowerCase();
+    for (const node of doc.querySelectorAll("label")) {
+      if (!plain(node).toLowerCase().includes(wanted)) continue;
+      const nested = node.querySelector("input");
+      if (!(nested instanceof HTMLInputElement) || nested.type === "radio" || nested.type === "file") continue;
+      return nested;
+    }
+    return null;
+  }
+
+  function writeControl(el: HTMLInputElement | HTMLTextAreaElement, value: string): void {
+    const owner = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(owner, "value")?.set as (this: HTMLInputElement | HTMLTextAreaElement, value: string) => void;
+    setter.call(el, value);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  function placeFile(input: HTMLInputElement, file: File): void {
+    const view = input.ownerDocument.defaultView as { DataTransfer?: new () => DataTransfer } | null;
+    const Transfer = view?.DataTransfer;
+    if (typeof Transfer === "function") {
+      try {
+        const transfer = new Transfer();
+        transfer.items.add(file);
+        if (transfer.files?.length) {
+          input.files = transfer.files;
+          input.dispatchEvent(new Event("change", { bubbles: true }));
+          return;
+        }
+      } catch {
+        /* the property fallback below still sets the file */
+      }
+    }
+    Object.defineProperty(input, "files", {
+      configurable: true,
+      value: { 0: file, length: 1 },
+    });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  async function waitFor(ready: () => boolean): Promise<boolean> {
+    const started = Date.now();
+    let found = ready();
+    while (!found && Date.now() - started < waitMs) {
+      await delay(stepMs);
+      found = ready();
+    }
+    return found;
+  }
+
+  let fileInput: HTMLInputElement | null = null;
+  const ready = await waitFor(() => {
+    if (isLogin()) return true;
+    const found = doc.querySelector("input[type='file']");
+    if (found) fileInput = found as HTMLInputElement;
+    return fileInput != null || isLogin();
+  });
+  if (!ready || isLogin()) {
+    return {
+      ok: false,
+      message: !ready
+        ? "CurseForge form did not load. The tab was left open."
+        : "CurseForge needs a sign-in. The form tab was left open.",
+    };
+  }
+  if (fill.versions.length === 0) {
+    return { ok: false, message: "CurseForge needs a game version on the host key." };
+  }
+
+  placeFile(fileInput as HTMLInputElement, new File([new Uint8Array(fill.bytes)], fill.fileName ? fill.fileName : "package", { type: fill.mime }));
+
+  if (waitMs > 0) {
+    const copyUntil = Date.now() + Math.min(waitMs, 400);
+    while (Date.now() < copyUntil && !/copied from the file/i.test(plain(doc.body))) await delay(stepMs);
+  }
+
+  if (fill.displayName) {
+    const box = fieldInput("Display name");
+    if (!box) return { ok: false, message: "CurseForge form has no display name field. The tab was left open." };
+    writeControl(box, fill.displayName);
+  }
+
+  const choice = radioNamed(fill.manual ? CURSE_MANUAL : CURSE_AUTO);
+  if (!choice) return { ok: false, message: "CurseForge form has no release option. The tab was left open." };
+  choice.click();
+
+  for (const version of fill.versions) {
+    const section = heading("Minecraft") as Element;
+    const parent = section.parentElement;
+    const scope = parent && parent !== doc.body ? parent : section;
+    const wanted = version.toLowerCase();
+    const chip = [...scope.querySelectorAll("[data-chip], span")].find((node) => plain(node).toLowerCase() === wanted);
+    if (chip) continue;
+    const opener = scope.querySelector("button, [role='combobox']");
+    if (opener) (opener as HTMLElement).click();
+    const field = scope.querySelector("input:not([type='file']):not([type='radio'])");
+    if (field) writeControl(field as HTMLInputElement, version);
+    const option = [...doc.querySelectorAll("[role='option']")].find((node) => plain(node).toLowerCase() === wanted);
+    if (!(option instanceof HTMLElement)) {
+      return { ok: false, message: `CurseForge has no Minecraft version ${version}. The tab was left open.` };
+    }
+    option.click();
+  }
+
+  const releaseLabel = heading("Release Type") as Element;
+  const nested = releaseLabel.querySelector("select");
+  const parent = releaseLabel.parentElement;
+  const sibling = parent && parent !== doc.body ? parent.querySelector("select") : null;
+  const releaseSelect = nested ?? sibling;
+  if (releaseSelect instanceof HTMLSelectElement) {
+    const option = [...releaseSelect.options].find((item) => plain(item).toLowerCase() === fill.releaseType.toLowerCase());
+    if (!option) return { ok: false, message: `CurseForge has no release type ${fill.releaseType}. The tab was left open.` };
+    releaseSelect.value = option.value;
+    releaseSelect.dispatchEvent(new Event("change", { bubbles: true }));
+  } else {
+    const scope = parent && parent !== doc.body ? parent : releaseLabel;
+    const option = [...scope.querySelectorAll("[role='option'], button")].find(
+          (node) => plain(node).toLowerCase() === fill.releaseType.toLowerCase(),
+    );
+    if (!(option instanceof HTMLElement)) {
+      return { ok: false, message: "CurseForge form has no release type. The tab was left open." };
+    }
+    option.click();
+  }
+
+  if (fill.changelog) {
+    if (fill.code) {
+      const codeButton = buttonNamed("</>") ?? buttonNamed("code");
+      if (codeButton) codeButton.click();
+      const area = doc.querySelector("textarea");
+      if (!(area instanceof HTMLTextAreaElement)) {
+        return { ok: false, message: "CurseForge changelog editor did not open. The tab was left open." };
+      }
+      writeControl(area, fill.changelog);
+    } else {
+      const editor = doc.querySelector("[contenteditable='true']");
+      if (!(editor instanceof HTMLElement)) {
+        return { ok: false, message: "CurseForge changelog editor did not open. The tab was left open." };
+      }
+      if (/<[a-z][\s\S]*>/i.test(fill.changelog)) editor.innerHTML = fill.changelog;
+      else editor.textContent = fill.changelog;
+      editor.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+  }
+
+  for (const relation of fill.relations) {
+    const add = buttonNamed("Add related project");
+    if (!add) return { ok: false, message: "CurseForge form has no related projects. The tab was left open." };
+    add.click();
+    const search = doc.querySelector("[role='dialog'] input, dialog input");
+    if (!(search instanceof HTMLInputElement)) {
+      return { ok: false, message: "CurseForge relation search did not open. The tab was left open." };
+    }
+    writeControl(search, relation);
+    const confirm = buttonNamed("Add to relations");
+    if (!confirm) return { ok: false, message: "CurseForge did not offer Add to relations. The tab was left open." };
+    confirm.click();
+  }
+
+  const submit = buttonNamed("Add File");
+  if (!submit) return { ok: false, message: "CurseForge form has no Add File button. The tab was left open." };
+  const before = hrefOf();
+  submit.click();
+
+  const started = Date.now();
+  for (;;) {
+    const link = [...doc.querySelectorAll("a")]
+      .map((anchor) => anchor.getAttribute("href"))
+      .find((href) => href != null && /\/files\/\d+/.test(href) && !href.includes("/create"));
+    if (link) {
+      const base = before.startsWith("http") ? before : "https://authors.curseforge.com/";
+      return { ok: true, url: new URL(link as string, base).href };
+    }
+    const href = hrefOf();
+    if (href && href !== before && !href.includes("/files/create") && !/^about:/i.test(href)) {
+      return { ok: true, url: href };
+    }
+    const alert = doc.querySelector("[role='alert']");
+    const alertText = alert ? plain(alert) : "";
+    if (alertText && !/copied from the file/i.test(alertText)) return { ok: false, message: alertText };
+    if (waitMs < 1 || Date.now() - started >= waitMs) break;
+    await delay(stepMs);
+  }
+  return { ok: false, message: "CurseForge did not finish the upload. The tab was left open." };
 }

@@ -1,11 +1,9 @@
 import type { PlatformId } from "./catalog.ts";
 import {
-  curseForgeDocumentToken,
-  curseForgeFileBody,
-  curseForgeTab,
-  curseForgeViewUrl,
-  curseVersionCatalog,
-  resolveCurseVersionIds,
+  curseForgeFormValues,
+  fillCurseForgePage,
+  type CurseFillResult,
+  type CurseFormFill,
   type Transport,
   type TransportResult,
   type PublishInput,
@@ -30,14 +28,18 @@ export function selectTransport(override?: Transport, dev = import.meta.env.DEV)
   return dev ? studioTransport() : liveTransport();
 }
 
-export function liveTransport(fetchImpl: typeof fetch = fetch, pause: (ms: number) => Promise<void> = sleep): Transport {
+export function liveTransport(
+  fetchImpl: typeof fetch = fetch,
+  pause: (ms: number) => Promise<void> = sleep,
+  curse: CurseTabDriver = chromeCurseDriver(),
+): Transport {
   return async (id, input) => {
     if (id === "steam") {
       return { ok: false, message: "Steam Workshop is not available until a later date." };
     }
     if (!input.file) return { ok: false, message: "Choose the package again. It is only kept until you publish." };
     const fields = input.fields ?? {};
-    if (id === "curseforge") return publishCurseForge(fetchImpl, input, fields);
+    if (id === "curseforge") return publishCurseForge(input, fields, curse);
     if (id === "nexus") return publishNexus(fetchImpl, input, fields, pause);
     if (id === "modrinth") return publishModrinth(fetchImpl, input, fields);
     if (id === "github") return publishGitHub(fetchImpl, input, fields);
@@ -354,105 +356,125 @@ async function errorText(response: Response): Promise<string> {
 }
 
 async function publishCurseForge(
-  fetchImpl: typeof fetch,
   input: PublishInput,
   fields: Record<string, string>,
+  curse: CurseTabDriver,
 ): Promise<TransportResult> {
   const projectId = (fields.projectId ?? "").trim();
   if (!projectId) return { ok: false, message: "CurseForge needs a project id." };
-  const file = input.file!;
-  const draft = curseForgeFileBody({
+  const values = curseForgeFormValues({
     changelog: input.changelog,
-    fileName: input.fileName,
-    fileLength: file.size,
     host: fields,
     override: input.override,
   });
-  if (draft.pendingNames.length > 0) {
-    const listed = await fetchImpl(`${CURSEFORGE}/_api/project-files/${encodeURIComponent(projectId)}/game-versions`, {
-      credentials: "include",
-      headers: { accept: "application/json" },
-    });
-    if (!listed.ok) return { ok: false, message: await errorText(listed) };
-    let payload: unknown;
-    try {
-      payload = await listed.json();
-    } catch {
-      return { ok: false, message: "CurseForge did not list game versions. Enter the version id." };
-    }
-    const catalog = curseVersionCatalog(payload);
-    const resolved = resolveCurseVersionIds(draft.versionRaw, catalog);
-    if (!resolved.ok) return resolved;
-    draft.body.gameVersionIds = resolved.ids;
-  } else if (draft.body.gameVersionIds.length === 0) {
-    return { ok: false, message: "CurseForge needs a game version id." };
+  if (values.versions.length === 0) {
+    return { ok: false, message: "CurseForge needs a game version on the host key." };
   }
-  const details = await fetchImpl(`${CURSEFORGE}/_api/project-files/${encodeURIComponent(projectId)}/upload-file-details`, {
-    method: "POST",
-    credentials: "include",
-    headers: { accept: "application/json", "content-type": "application/json" },
-    body: JSON.stringify(draft.body),
-  });
-  const detailText = (await details.text()).trim();
-  const detailType = details.headers.get("content-type") || "";
-  if (curseForgeDocumentToken(details.status, detailText, detailType)) {
-    const opened = await leaveCurseForgeTab(projectId);
-    return {
-      ok: false,
-      message: opened
-        ? "CurseForge blocked the silent upload. A background tab was left open."
-        : "CurseForge blocked the silent upload. Sign in on CurseForge and publish again.",
-    };
-  }
-  if (!details.ok) return { ok: false, message: hostMessage(detailText, details.status) };
-  let detailBody: unknown;
+  const file = input.file!;
+  const fill: CurseFormFill = {
+    ...values,
+    fileName: input.fileName,
+    bytes: Array.from(new Uint8Array(await file.arrayBuffer())),
+    mime: file.type,
+    waitMs: 12000,
+    stepMs: 50,
+  };
+  const url = `${CURSEFORGE}/#/projects/${encodeURIComponent(projectId)}/files/create`;
+  let tabId: number | null = null;
   try {
-    detailBody = JSON.parse(detailText);
+    tabId = await curse.open(url);
   } catch {
-    return { ok: false, message: "CurseForge did not return an upload." };
+    return { ok: false, message: "CurseForge could not open the form tab." };
   }
-  const detail = dataOf(detailBody);
-  const uploadId = String(detail.uploadId ?? "").trim();
-  if (!uploadId) return { ok: false, message: "CurseForge did not return an upload." };
-  const chunk = new FormData();
-  chunk.set("chunkedUploadId", uploadId);
-  chunk.set("chunkIndex", "1");
-  chunk.set("totalChunks", "1");
-  chunk.set("file", file, input.fileName);
-  const uploaded = await fetchImpl(`${CURSEFORGE}/_api/project-files/${encodeURIComponent(projectId)}/upload-file-chunk`, {
-    method: "POST",
-    credentials: "include",
-    body: chunk,
-  });
-  if (!uploaded.ok) return { ok: false, message: await errorText(uploaded) };
-  let accepted = false;
+  if (tabId == null) return { ok: false, message: "CurseForge could not open the form tab." };
+  let result: CurseFillResult;
   try {
-    const body = await uploaded.json();
-    accepted = body === true || (typeof body === "object" && body !== null && (body as { data?: unknown }).data === true);
+    result = await curse.run(tabId, fill);
   } catch {
-    accepted = false;
+    return { ok: false, message: "CurseForge form could not be filled. The tab was left open." };
   }
-  if (!accepted) return { ok: false, message: "CurseForge did not accept the file." };
-  const fileId = detail.fileId == null || String(detail.fileId).trim() === "" ? "" : String(detail.fileId).trim();
-  const slug = String(detail.slug ?? "").trim();
-  const url = curseForgeViewUrl({ fileId, slug, projectId });
-  return url ? { ok: true, url } : { ok: true };
+  if (!result.ok) return { ok: false, message: result.message };
+  const view = result.url.trim();
+  if (!view) return { ok: false, message: "CurseForge did not show the uploaded file. The tab was left open." };
+  try {
+    await curse.close(tabId);
+  } catch {
+    return { ok: true, url: view };
+  }
+  return { ok: true, url: view };
 }
 
-async function leaveCurseForgeTab(projectId: string): Promise<boolean> {
-  const chromeApi = (globalThis as { chrome?: { tabs?: { create?: unknown } } }).chrome;
-  const create = chromeApi?.tabs?.create;
-  if (typeof create !== "function") return false;
-  try {
-    const plan = curseForgeTab(true);
-    await (create as (opts: { url: string; active: boolean }) => Promise<unknown>)({
-      url: `${CURSEFORGE}/#/projects/${encodeURIComponent(projectId)}/files/create`,
-      active: plan.active,
-    });
-    return true;
-  } catch {
-    return false;
+type ChromeTab = { id?: number; status?: string };
+
+type ChromeApi = {
+  tabs?: {
+    create?: (opts: { url: string; active: boolean }) => Promise<ChromeTab>;
+    get?: (id: number) => Promise<ChromeTab>;
+    remove?: (id: number) => Promise<void>;
+  };
+  scripting?: {
+    executeScript?: (opts: {
+      target: { tabId: number };
+      func: (fill: CurseFormFill) => Promise<CurseFillResult>;
+      args: [CurseFormFill];
+    }) => Promise<Array<{ result?: CurseFillResult }>>;
+  };
+};
+
+export type CurseTabDriver = {
+  open(url: string): Promise<number | null>;
+  run(tabId: number, fill: CurseFormFill): Promise<CurseFillResult>;
+  close(tabId: number): Promise<void>;
+};
+
+function chromeApi(): ChromeApi | null {
+  return (globalThis as { chrome?: ChromeApi }).chrome ?? null;
+}
+
+async function waitUntilReady(api: ChromeApi, id: number): Promise<void> {
+  const get = api.tabs?.get;
+  if (typeof get !== "function") return;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    let tab: ChromeTab | undefined;
+    try {
+      tab = await get(id);
+    } catch {
+      return;
+    }
+    if (tab?.status !== "loading") return;
+    await sleep(25);
   }
+}
+
+export function chromeCurseDriver(): CurseTabDriver {
+  return {
+    async open(url) {
+      const api = chromeApi();
+      const create = api?.tabs?.create;
+      if (typeof create !== "function") return null;
+      const tab = await create({ url, active: false });
+      if (tab?.id == null) return null;
+      await waitUntilReady(api!, tab.id);
+      return tab.id;
+    },
+    async run(tabId, fill) {
+      const execute = chromeApi()?.scripting?.executeScript;
+      if (typeof execute !== "function") {
+        return { ok: false, message: "CurseForge form could not be filled. The tab was left open." };
+      }
+      const packed = await execute({ target: { tabId }, func: fillCurseForgePage, args: [fill] });
+      const result = packed?.[0]?.result;
+      if (!result || typeof result.ok !== "boolean") {
+        return { ok: false, message: "CurseForge form could not be filled. The tab was left open." };
+      }
+      return result;
+    },
+    async close(tabId) {
+      const remove = chromeApi()?.tabs?.remove;
+      if (typeof remove !== "function") throw new Error("CurseForge tab could not be closed.");
+      await remove(tabId);
+    },
+  };
 }
 
 function hostMessage(text: string, status: number): string {

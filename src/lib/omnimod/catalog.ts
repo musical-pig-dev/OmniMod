@@ -94,7 +94,7 @@ export const PLATFORMS: Platform[] = [
   {
     id: "curseforge",
     name: "CurseForge",
-    summary: "Session upload. Uses the CurseForge login already in this browser. A project id and game version ids. No API token.",
+    summary: "Authors form. Opens the upload page in a background tab and fills it with the browser login. A project id and game versions. No API token.",
     lane: "bot",
     accepts: [".zip", ".jar"],
     tokenUrl: "https://www.curseforge.com/",

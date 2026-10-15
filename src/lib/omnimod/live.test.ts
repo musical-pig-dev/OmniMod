@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import { liveHost, liveTransport, selectTransport, sleep } from "./live.ts";
-import type { PublishInput, Transport } from "./publish.ts";
+import { liveHost, liveTransport, selectTransport, sleep, chromeCurseDriver } from "./live.ts";
+import type { CurseFormFill, PublishInput, Transport } from "./publish.ts";
 
 const file = new Blob([new Uint8Array([1, 2, 3])], { type: "application/zip" });
 const pack = new Blob(["icon.png README.md manifest.json"]);
@@ -481,170 +481,220 @@ describe("live transport", () => {
   });
 });
 
-describe("curseforge session upload", () => {
-  const versions = { data: [{ id: 17045, name: "26.3", slug: "26-3" }, { id: 9, name: "Other", slug: "fabric" }] };
+describe("curseforge form tab", () => {
+  const base = {
+    fileName: "lanterns.zip",
+    bytes: [1, 2, 3],
+    mime: "application/zip",
+    displayName: "",
+    manual: false,
+    versions: ["26.3"],
+    releaseType: "Release",
+    changelog: "",
+    code: false,
+    relations: [],
+    waitMs: 0,
+    stepMs: 0,
+  } satisfies CurseFormFill;
 
-  function chromeStub(create: (opts: { url: string; active: boolean }) => Promise<unknown> | unknown) {
-    (globalThis as { chrome?: unknown }).chrome = { tabs: { create } };
-  }
-
-  function clearChrome() {
-    delete (globalThis as { chrome?: unknown }).chrome;
-  }
-
-  it("posts the live body, then the chunk, and returns the file link", async () => {
-    const calls: string[] = [];
-    const bodies: string[] = [];
-    const creds: Array<RequestCredentials | undefined> = [];
-    const keys: string[] = [];
-    const mode = { value: "ok" };
-    const fetchImpl: typeof fetch = async (url, init) => {
-      const target = String(url);
-      calls.push(`${init?.method ?? "GET"} ${target}`);
-      creds.push(init?.credentials);
-      const headers = new Headers(init?.headers);
-      keys.push(headers.get("x-api-key") ?? "");
-      if (init?.body && !(init.body instanceof FormData)) bodies.push(String(init.body));
-      if (target.endsWith("/game-versions")) {
-        if (mode.value === "lookup-fail") return jsonResponse({ message: "signed out" }, 401);
-        if (mode.value === "lookup-text") return new Response("nope", { status: 200 });
-        if (mode.value === "lookup-shape") return jsonResponse({ nope: true });
-        if (mode.value === "lookup-empty") return jsonResponse({ data: [] });
-        if (mode.value === "lookup-ambiguous") {
-          return jsonResponse({ data: [{ id: 1, name: "26.3" }, { id: 2, slug: "26.3" }] });
-        }
-        return jsonResponse(versions);
-      }
-      if (target.endsWith("/upload-file-details")) {
-        if (mode.value === "wall") return new Response("<html>login</html>", { status: 401, headers: { "content-type": "text/html" } });
-        if (mode.value === "wall-json") return jsonResponse({ error: "token" }, 403);
-        if (mode.value === "denied") return jsonResponse({ message: "versions required" }, 400);
-        if (mode.value === "empty-detail") return new Response(" ", { status: 200, headers: { "content-type": "" } });
-        if (mode.value === "bad-detail") return new Response("not-json", { status: 200 });
-        if (mode.value === "no-upload") return jsonResponse({ data: {} });
-        if (mode.value === "slug") return jsonResponse({ data: { uploadId: "up-1", fileId: 9172385, slug: "simple mod" } });
-        if (mode.value === "no-file") return jsonResponse({ data: { uploadId: "up-1" } });
-        if (mode.value === "blank-id") return jsonResponse({ data: { uploadId: "up-1", fileId: " " } });
-        return jsonResponse({ data: { uploadId: "up-1", fileId: 9172385 } });
-      }
-      if (target.endsWith("/upload-file-chunk")) {
-        if (init?.body instanceof FormData) {
-          bodies.push(
-            ["chunkedUploadId", "chunkIndex", "totalChunks", "file"]
-              .map((key) => `${key}=${String(init.body instanceof FormData ? init.body.get(key) : "")}`)
-              .join("&"),
-          );
-        }
-        if (mode.value === "chunk-fail") return jsonResponse({ message: "chunk rejected" }, 400);
-        if (mode.value === "chunk-false") return jsonResponse({ data: false });
-        if (mode.value === "chunk-text") return new Response("nope", { status: 200 });
-        if (mode.value === "chunk-null") return new Response("null", { status: 200, headers: { "content-type": "application/json" } });
-        if (mode.value === "chunk-raw") return new Response("true", { status: 200, headers: { "content-type": "application/json" } });
-        return jsonResponse({ data: true });
-      }
-      return jsonResponse({ message: "no" }, 500);
+  function driver(behavior: {
+    open?: (url: string) => Promise<number | null>;
+    run?: (tabId: number, fill: CurseFormFill) => Promise<{ ok: true; url: string } | { ok: false; message: string }>;
+    close?: (tabId: number) => Promise<void>;
+  }) {
+    const opened: string[] = [];
+    const closed: number[] = [];
+    return {
+      opened,
+      closed,
+      tabs: {
+        open: behavior.open ?? (async (url: string) => {
+          opened.push(url);
+          return 4;
+        }),
+        run: behavior.run ?? (async () => ({ ok: true as const, url: "https://authors.curseforge.com/#/projects/1744552/files/9" })),
+        close: behavior.close ?? (async (tabId: number) => {
+          closed.push(tabId);
+        }),
+      },
     };
-    const transport = host(fetchImpl);
+  }
+
+  it("opens the authors form in the background and returns the file link", async () => {
+    const form = driver({});
+    const transport = liveTransport(async () => jsonResponse({}), quiet, form.tabs);
     const sent = await transport(
       "curseforge",
-      input({ projectId: "1744552", gameVersions: "17045", releaseType: "release", changelogType: "html" }),
-    );
-    assert.equal(sent.ok && sent.url, "https://authors.curseforge.com/#/projects/1744552/files/9172385");
-    assert.ok(calls.some((call) => call === "POST https://authors.curseforge.com/_api/project-files/1744552/upload-file-details"));
-    assert.ok(calls.some((call) => call.endsWith("/upload-file-chunk")));
-    assert.ok(!calls.some((call) => call.includes("game-versions")));
-    assert.ok(creds.every((item) => item === "include"));
-    assert.ok(keys.every((item) => item === ""));
-    const posted = JSON.parse(bodies[0] ?? "{}") as { gameVersionIds: number[]; changelogType: number; releaseType: number; changelog: string };
-    assert.deepEqual(posted.gameVersionIds, [17045]);
-    assert.equal(posted.changelogType, 1);
-    assert.equal(posted.releaseType, 1);
-    assert.equal(posted.changelog, "<p>Glass.</p>");
-    assert.equal("isMarkedForManualRelease" in posted, false);
-    assert.match(bodies.find((body) => body.startsWith("chunkedUploadId")) ?? "", /chunkedUploadId=up-1&chunkIndex=1&totalChunks=1/);
-
-    const named = await transport(
-      "curseforge",
       input(
-        { projectId: "1744552", gameVersions: "1.20.1", publishWhen: "auto" },
-        { override: { gameVersions: "26.3", displayName: "Sample", publishWhen: "manual", releaseType: "alpha" } },
+        { projectId: "1744552", gameVersions: "26.3", releaseType: "alpha", publishWhen: "manual" },
+        { override: { displayName: "Sample", gameVersions: "26.3" } },
       ),
     );
-    assert.equal(named.ok, true);
-    const namedBody = JSON.parse(bodies.filter((body) => body.startsWith("{")).at(-1) ?? "{}") as {
-      gameVersionIds: number[];
-      displayName: string;
-      releaseType: number;
-      isMarkedForManualRelease?: boolean;
+    assert.equal(sent.ok && sent.url, "https://authors.curseforge.com/#/projects/1744552/files/9");
+    assert.equal(form.opened[0], "https://authors.curseforge.com/#/projects/1744552/files/create");
+    assert.deepEqual(form.closed, [4]);
+
+    const blank = driver({ run: async () => ({ ok: true, url: "  " }) });
+    const missingLink = await liveTransport(async () => jsonResponse({}), quiet, blank.tabs)(
+      "curseforge",
+      input({ projectId: "1744552", gameVersions: "26.3" }),
+    );
+    assert.match(missingLink.ok ? "" : missingLink.message, /did not show the uploaded file/);
+    assert.deepEqual(blank.closed, []);
+
+    const refused = driver({ run: async () => ({ ok: false, message: "CurseForge needs a sign-in. The form tab was left open." }) });
+    const blocked = await liveTransport(async () => jsonResponse({}), quiet, refused.tabs)(
+      "curseforge",
+      input({ projectId: "1744552", gameVersions: "26.3" }),
+    );
+    assert.match(blocked.ok ? "" : blocked.message, /sign-in/);
+    assert.deepEqual(refused.closed, []);
+
+    const stuck = driver({
+      close: async () => {
+        throw new Error("blocked");
+      },
+    });
+    const kept = await liveTransport(async () => jsonResponse({}), quiet, stuck.tabs)(
+      "curseforge",
+      input({ projectId: "1744552", gameVersions: "26.3" }),
+    );
+    assert.equal(kept.ok && kept.url, "https://authors.curseforge.com/#/projects/1744552/files/9");
+
+    const noTab = driver({ open: async () => null });
+    assert.match(
+      (await liveTransport(async () => jsonResponse({}), quiet, noTab.tabs)(
+        "curseforge",
+        input({ projectId: "1744552", gameVersions: "26.3" }),
+      )).ok
+        ? ""
+        : "CurseForge could not open the form tab.",
+      /could not open/,
+    );
+    const thrown = driver({
+      open: async () => {
+        throw new Error("no");
+      },
+    });
+    assert.match(
+      (
+        await liveTransport(async () => jsonResponse({}), quiet, thrown.tabs)(
+          "curseforge",
+          input({ projectId: "1744552", gameVersions: "26.3" }),
+        )
+      ).ok
+        ? ""
+        : "could not open",
+      /could not open/,
+    );
+    const fillThrow = driver({
+      run: async () => {
+        throw new Error("script");
+      },
+    });
+    assert.match(
+      (
+        await liveTransport(async () => jsonResponse({}), quiet, fillThrow.tabs)(
+          "curseforge",
+          input({ projectId: "1744552", gameVersions: "26.3" }),
+        )
+      ).ok
+        ? ""
+        : "left open",
+      /left open/,
+    );
+    assert.deepEqual(base.versions, ["26.3"]);
+  });
+
+  it("uses the chrome tab driver and leaves the tab when the script does not fill", async () => {
+    const calls: Array<{ url?: string; active?: boolean; id?: number }> = [];
+    const removed: number[] = [];
+    let loads = 0;
+    const chrome = {
+      tabs: {
+        create: async (opts: { url: string; active: boolean }) => {
+          calls.push(opts);
+          return { id: 8 };
+        },
+        get: async (id: number) => {
+          loads += 1;
+          if (loads === 1) throw new Error("not yet");
+          return { id, status: loads === 2 ? "loading" : "complete" };
+        },
+        remove: async (id: number) => {
+          removed.push(id);
+        },
+      },
+      scripting: {
+        executeScript: async () => [{ result: { ok: true, url: "https://www.curseforge.com/projects/simple/files/3" } }],
+      },
     };
-    assert.deepEqual(namedBody.gameVersionIds, [17045]);
-    assert.equal(namedBody.displayName, "Sample");
-    assert.equal(namedBody.releaseType, 3);
-    assert.equal(namedBody.isMarkedForManualRelease, true);
+    (globalThis as { chrome?: unknown }).chrome = chrome;
+    const transport = liveTransport(async () => jsonResponse({}), quiet);
+    const sent = await transport("curseforge", input({ projectId: "1744552", gameVersions: "26.3" }));
+    assert.equal(sent.ok && sent.url, "https://www.curseforge.com/projects/simple/files/3");
+    assert.equal(calls[0]?.active, false);
+    assert.match(calls[0]?.url ?? "", /1744552\/files\/create/);
+    assert.deepEqual(removed, [8]);
 
-    mode.value = "slug";
-    const linked = await transport("curseforge", input({ projectId: "1744552", gameVersions: "17045" }));
-    assert.equal(linked.ok && linked.url, "https://www.curseforge.com/projects/simple%20mod/files/9172385");
-    mode.value = "no-file";
-    const quiet = await transport("curseforge", input({ projectId: "1744552", gameVersions: "17045" }));
-    assert.equal(quiet.ok, true);
-    assert.equal(quiet.ok && quiet.url, undefined);
-    mode.value = "blank-id";
-    const blankId = await transport("curseforge", input({ projectId: "1744552", gameVersions: "17045" }));
-    assert.equal(blankId.ok, true);
-    assert.equal(blankId.ok && blankId.url, undefined);
-    mode.value = "chunk-raw";
-    assert.equal((await transport("curseforge", input({ projectId: "1744552", gameVersions: "17045" }))).ok, true);
+    chrome.scripting.executeScript = async () => [{ result: { ok: false, message: "CurseForge form did not load. The tab was left open." } }];
+    const failed = await transport("curseforge", input({ projectId: "1744552", gameVersions: "26.3" }));
+    assert.match(failed.ok ? "" : failed.message, /did not load/);
 
-    mode.value = "lookup-fail";
-    assert.match((await transport("curseforge", input({ projectId: "1744552", gameVersions: "26.3" }))).message ?? "", /signed out/);
-    mode.value = "lookup-text";
-    assert.match((await transport("curseforge", input({ projectId: "1744552", gameVersions: "26.3" }))).message ?? "", /did not list/);
-    mode.value = "lookup-shape";
-    assert.match((await transport("curseforge", input({ projectId: "1744552", gameVersions: "26.3" }))).message ?? "", /did not list/);
-    mode.value = "lookup-empty";
-    assert.match((await transport("curseforge", input({ projectId: "1744552", gameVersions: "26.3" }))).message ?? "", /no game version named/);
-    mode.value = "lookup-ambiguous";
-    assert.match((await transport("curseforge", input({ projectId: "1744552", gameVersions: "26.3" }))).message ?? "", /more than one/);
-    mode.value = "ok";
-    const fabric = await transport("curseforge", input({ projectId: "1744552", gameVersions: "fabric" }));
-    assert.equal(fabric.ok, true);
+    chrome.scripting.executeScript = async () => [{}];
+    assert.match(
+      (await transport("curseforge", input({ projectId: "1744552", gameVersions: "26.3" }))).ok
+        ? ""
+        : "could not be filled",
+      /could not be filled/,
+    );
+    chrome.scripting.executeScript = async () => [];
+    assert.match(
+      (await transport("curseforge", input({ projectId: "1744552", gameVersions: "26.3" }))).ok
+        ? ""
+        : "could not be filled",
+      /could not be filled/,
+    );
 
-    mode.value = "denied";
-    assert.match((await transport("curseforge", input({ projectId: "1744552", gameVersions: "17045" }))).message ?? "", /versions required/);
-    mode.value = "empty-detail";
-    assert.match((await transport("curseforge", input({ projectId: "1744552", gameVersions: "17045" }))).message ?? "", /did not return an upload/);
-    mode.value = "bad-detail";
-    assert.match((await transport("curseforge", input({ projectId: "1744552", gameVersions: "17045" }))).message ?? "", /did not return an upload/);
-    mode.value = "no-upload";
-    assert.match((await transport("curseforge", input({ projectId: "1744552", gameVersions: "17045" }))).message ?? "", /did not return an upload/);
-    mode.value = "chunk-fail";
-    assert.match((await transport("curseforge", input({ projectId: "1744552", gameVersions: "17045" }))).message ?? "", /chunk rejected/);
-    mode.value = "chunk-false";
-    assert.match((await transport("curseforge", input({ projectId: "1744552", gameVersions: "17045" }))).message ?? "", /did not accept/);
-    mode.value = "chunk-text";
-    assert.match((await transport("curseforge", input({ projectId: "1744552", gameVersions: "17045" }))).message ?? "", /did not accept/);
-    mode.value = "chunk-null";
-    assert.match((await transport("curseforge", input({ projectId: "1744552", gameVersions: "17045" }))).message ?? "", /did not accept/);
-
-    mode.value = "wall";
-    chromeStub(async (opts) => {
-      assert.equal(opts.active, false);
-      assert.match(opts.url, /1744552\/files\/create/);
-      return { id: 7 };
-    });
-    assert.match((await transport("curseforge", input({ projectId: "1744552", gameVersions: "17045" }))).message ?? "", /background tab/);
-    clearChrome();
-    assert.match((await transport("curseforge", input({ projectId: "1744552", gameVersions: "17045" }))).message ?? "", /Sign in/);
-    chromeStub(() => {
-      throw new Error("blocked");
-    });
-    assert.match((await transport("curseforge", input({ projectId: "1744552", gameVersions: "17045" }))).message ?? "", /Sign in/);
+    const bare = chromeCurseDriver();
+    delete (globalThis as { chrome?: unknown }).chrome;
+    assert.equal(await bare.open("https://authors.curseforge.com/#/projects/1/files/create"), null);
     (globalThis as { chrome?: unknown }).chrome = { tabs: {} };
-    assert.match((await transport("curseforge", input({ projectId: "1744552", gameVersions: "17045" }))).message ?? "", /Sign in/);
-    clearChrome();
-    mode.value = "wall-json";
-    assert.match((await transport("curseforge", input({ projectId: "1744552", gameVersions: "17045" }))).message ?? "", /Sign in/);
+    assert.equal(await bare.open("https://authors.curseforge.com/#/projects/1/files/create"), null);
+    (globalThis as { chrome?: unknown }).chrome = {
+      tabs: {
+        create: async () => ({}),
+        remove: async () => {},
+      },
+    };
+    assert.equal(await bare.open("https://authors.curseforge.com/#/projects/1/files/create"), null);
+    assert.match((await bare.run(1, base)).message ?? "", /could not be filled/);
+    (globalThis as { chrome?: unknown }).chrome = {
+      tabs: { create: async () => ({ id: 2 }) },
+      scripting: { executeScript: async () => [{ result: { ok: true, url: "https://authors.curseforge.com/#/projects/1/files/4" } }] },
+    };
+    assert.equal(await bare.open("https://authors.curseforge.com/#/projects/1/files/create"), 2);
+    await assert.rejects(() => bare.close(2), /could not be closed/);
+
+    let spins = 0;
+    (globalThis as { chrome?: unknown }).chrome = {
+      tabs: {
+        create: async () => ({ id: 5 }),
+        get: async () => {
+          spins += 1;
+          return { status: "loading" };
+        },
+        remove: async () => {
+          throw new Error("no");
+        },
+      },
+      scripting: { executeScript: async () => [{ result: { nope: true } }] },
+    };
+    assert.equal(await bare.open("https://authors.curseforge.com/#/projects/1/files/create"), 5);
+    assert.equal(spins, 3);
+    assert.match((await bare.run(5, base)).message ?? "", /could not be filled/);
+    await assert.rejects(() => bare.close(5), /no/);
+    delete (globalThis as { chrome?: unknown }).chrome;
   });
 });
 

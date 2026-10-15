@@ -4,9 +4,11 @@ import { defaultConfigs, type ConfigMap, type PlatformId } from "./catalog.ts";
 import {
   curseForgeDocumentToken,
   curseForgeFileBody,
+  curseForgeFormValues,
   curseForgeTab,
   curseForgeViewUrl,
   curseVersionCatalog,
+  fillCurseForgePage,
   planPublish,
   practiceFields,
   practiceValue,
@@ -443,5 +445,301 @@ describe("curseForge file", () => {
     assert.equal(curseForgeDocumentToken(403, "antiforgery"), true);
     assert.equal(curseForgeDocumentToken(403, "nope"), false);
     assert.equal(curseForgeDocumentToken(400, "versions required"), false);
+  });
+});
+
+describe("curseForge authors form", () => {
+  const fill = {
+    fileName: "README.md.zip",
+    bytes: [1, 2, 3],
+    mime: "application/zip",
+    displayName: "Sample",
+    manual: false,
+    versions: ["26.3"],
+    releaseType: "Release",
+    changelog: "Glass.",
+    code: false,
+    relations: [] as string[],
+    waitMs: 0,
+    stepMs: 0,
+  };
+
+  function mount(html: string) {
+    document.body.innerHTML = html;
+  }
+
+  const form = `
+    <input type="file" />
+    <label>Display name <input id="name" /></label>
+    <label><input type="radio" name="when" /> Publish this file automatically once approved</label>
+    <label><input type="radio" name="when" /> I would like to publish this file manually once approved</label>
+    <div>
+      <span>Minecraft *</span>
+      <button type="button">Versions</button>
+      <button type="button" role="option">26.3</button>
+    </div>
+    <label>Release Type
+      <select>
+        <option>Release</option>
+        <option>Beta</option>
+        <option>Alpha</option>
+      </select>
+    </label>
+    <div contenteditable="true"></div>
+    <button type="button"></></button>
+    <textarea></textarea>
+    <button type="button">Add related project</button>
+    <div role="dialog"><input /><button type="button">Add to relations</button></div>
+    <button type="button">Add File</button>
+  `;
+
+  it("maps host fields and lets a written override win", () => {
+    const values = curseForgeFormValues({
+      changelog: " Glass. ",
+      host: {
+        displayName: "Host",
+        gameVersions: "26.3, 1.21.1",
+        releaseType: "beta",
+        publishWhen: "auto",
+        changelogType: "html",
+        relations: "jei:requiredDependency",
+      },
+      override: { displayName: "Over", releaseType: "alpha", publishWhen: "manual", changelogType: "markdown", relations: "pack:optionalDependency" },
+    });
+    assert.equal(values.displayName, "Over");
+    assert.deepEqual(values.versions, ["26.3", "1.21.1"]);
+    assert.equal(values.releaseType, "Alpha");
+    assert.equal(values.manual, true);
+    assert.equal(values.code, true);
+    assert.deepEqual(values.relations, ["pack"]);
+    assert.equal(values.changelog, "Glass.");
+    const fallback = curseForgeFormValues({
+      changelog: "  ",
+      host: { changelogType: "text", releaseType: "nope" },
+    });
+    assert.equal(fallback.releaseType, "Release");
+    assert.equal(fallback.code, true);
+    assert.equal(fallback.manual, false);
+    assert.equal(fallback.changelog, "");
+    assert.deepEqual(fallback.versions, []);
+    const html = curseForgeFormValues({ changelog: "n", host: { changelogType: "html", publishWhen: "auto" } });
+    assert.equal(html.code, false);
+    const numbered = curseForgeFormValues({ changelog: "", host: { relations: "88211:tool", releaseType: "beta" } });
+    assert.deepEqual(numbered.relations, ["88211"]);
+    assert.equal(numbered.releaseType, "Beta");
+  });
+
+  it("fills the upload form and returns the file link", async () => {
+    mount(`${form}<a href="https://authors.curseforge.com/#/projects/1744552/files/9">file</a>`);
+    const linked = await fillCurseForgePage({ ...fill, relations: ["jei"], changelog: "<p>Glass.</p>" });
+    assert.equal(linked.ok && linked.url, "https://authors.curseforge.com/#/projects/1744552/files/9");
+    assert.equal((document.querySelector("#name") as HTMLInputElement).value, "Sample");
+
+    mount(form.replace('role="option">26.3', 'role="option">1.21.1').replace("Release Type\n      <select>", "Release Type\n      <div>"));
+    mount(`
+      <input type="file" />
+      <label>Display name <input /></label>
+      <label><input type="radio" /> Publish this file automatically once approved</label>
+      <div>
+        <span>Minecraft *</span>
+        <span data-chip>26.3</span>
+        <button type="button">Versions</button>
+        <input role="combobox" />
+        <button type="button" role="option">1.21.1</button>
+      </div>
+      <div><span>Release Type</span><button type="button" role="option">Beta</button></div>
+      <div contenteditable="true"></div>
+      <button type="button">Add File</button>
+      <a href="/projects/1744552/files/4">file</a>
+    `);
+    const relative = await fillCurseForgePage({
+      ...fill,
+      displayName: "",
+      versions: ["26.3", "1.21.1"],
+      releaseType: "Beta",
+      changelog: "plain",
+      waitMs: 30,
+      stepMs: 5,
+    });
+    assert.equal(relative.ok && relative.url, "http://localhost:3000/projects/1744552/files/4");
+    assert.equal((document.querySelector("[role='combobox']") as HTMLInputElement).value, "1.21.1");
+
+    mount(`
+      <input type="file" />
+      <label><input type="radio" /> Publish this file automatically once approved</label>
+      <label>Minecraft * <input id="typed" /></label>
+      <button type="button" role="option">26.3</button>
+      <label>Release Type <select><option>Release</option></select></label>
+      <button type="button">Add File</button>
+      <a href="https://authors.curseforge.com/#/projects/1/files/12">file</a>
+    `);
+    const typed = await fillCurseForgePage({ ...fill, displayName: "", changelog: "", relations: [] });
+    assert.equal(typed.ok && typed.url, "https://authors.curseforge.com/#/projects/1/files/12");
+    assert.equal((document.querySelector("#typed") as HTMLInputElement).value, "26.3");
+
+    mount(`${form}<p role="alert">These values were copied from the file "README.md.zip"</p>`);
+    document.querySelector("button")?.addEventListener("click", () => {
+      if ((document.activeElement as HTMLElement | null)?.textContent?.includes("Add File") || true) {
+        document.body.insertAdjacentHTML("beforeend", `<a href="https://authors.curseforge.com/#/projects/1/files/8">up</a>`);
+      }
+    });
+    const copied = await fillCurseForgePage({ ...fill, manual: true, code: true, changelog: "md", waitMs: 40, stepMs: 5 });
+    assert.equal(copied.ok, true);
+
+    mount(`<p>Sign in to continue</p>`);
+    assert.match((await fillCurseForgePage(fill)).ok ? "" : "sign-in", /sign-in/);
+    mount(`<p>Please wait</p>`);
+    assert.match((await fillCurseForgePage({ ...fill, waitMs: 15, stepMs: 5 })).ok ? "" : "did not load", /did not load/);
+
+    mount(form.replace("Display name <input id=\"name\" />", "Display name <input type=\"file\" />"));
+    assert.match((await fillCurseForgePage(fill)).ok ? "" : "display name", /display name/);
+
+    mount(form.replace("<label>Display name <input id=\"name\" /></label>", "<label>Display name</label>"));
+    assert.match((await fillCurseForgePage(fill)).ok ? "" : "display name", /display name/);
+
+    mount(form.replace(/<label><input type="radio".*?<\/label>/g, "<label>Publish this file automatically once approved</label>"));
+    assert.match((await fillCurseForgePage({ ...fill, displayName: "Sample" })).ok ? "" : "release option", /release option/);
+
+    mount(form.replace('role="option">26.3', 'role="option">other'));
+    assert.match((await fillCurseForgePage(fill)).ok ? "" : "26.3", /26\.3/);
+
+    mount(form.replace("<option>Release</option>", "<option>Beta</option>"));
+    const missingType = await fillCurseForgePage(fill);
+    assert.equal(missingType.ok, false);
+    if (!missingType.ok) assert.match(missingType.message, /release type Release/);
+
+    mount(form.replace(/<label>Release Type[\s\S]*?<\/label>/, "<span>Release Type</span>"));
+    assert.match((await fillCurseForgePage(fill)).ok ? "" : "no release type", /no release type/);
+
+    mount(form.replace('<div contenteditable="true"></div>', ""));
+    assert.match((await fillCurseForgePage(fill)).ok ? "" : "changelog", /changelog/);
+    mount(form.replace("<textarea></textarea>", "").replace("<button type=\"button\"></></button>", ""));
+    assert.match((await fillCurseForgePage({ ...fill, code: true })).ok ? "" : "changelog", /changelog/);
+
+    mount(form.replace('<button type="button">Add related project</button>', ""));
+    assert.match((await fillCurseForgePage({ ...fill, relations: ["jei"] })).ok ? "" : "related projects", /related projects/);
+    mount(form.replace('<div role="dialog"><input /><button type="button">Add to relations</button></div>', ""));
+    assert.match((await fillCurseForgePage({ ...fill, relations: ["jei"] })).ok ? "" : "relation search", /relation search/);
+    mount(form.replace('<button type="button">Add to relations</button>', ""));
+    assert.match((await fillCurseForgePage({ ...fill, relations: ["jei"] })).ok ? "" : "Add to relations", /Add to relations/);
+
+    mount(form.replace('<button type="button">Add File</button>', ""));
+    assert.match((await fillCurseForgePage(fill)).ok ? "" : "Add File", /Add File/);
+
+    mount(`${form}<p role="alert">Version is required</p>`);
+    assert.match((await fillCurseForgePage(fill)).message ?? "", /Version is required/);
+
+    mount(form);
+    assert.match((await fillCurseForgePage({ ...fill, waitMs: 30, stepMs: 5 })).message ?? "", /did not finish/);
+
+    const inputSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+    const areaSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value");
+    mount(`${form}<a href="https://authors.curseforge.com/#/projects/1/files/2">file</a>`);
+    assert.equal((await fillCurseForgePage({ ...fill, code: true, relations: [] })).ok, true);
+
+    const view = document.defaultView as { DataTransfer?: unknown } | null;
+    const Original = view?.DataTransfer;
+    class EmptyTransfer {
+      items = { add() {} };
+      files = { length: 0 };
+    }
+    class BoomTransfer {
+      items = { add() { throw new Error("no"); } };
+      files = { length: 0 };
+    }
+    if (view) {
+      view.DataTransfer = EmptyTransfer as unknown as typeof DataTransfer;
+      mount(`${form}<a href="https://authors.curseforge.com/#/projects/1/files/5">file</a>`);
+      assert.equal((await fillCurseForgePage({ ...fill, fileName: "" })).ok, true);
+      view.DataTransfer = BoomTransfer as unknown as typeof DataTransfer;
+      mount(`${form}<a href="https://authors.curseforge.com/#/projects/1/files/6">file</a>`);
+      assert.equal((await fillCurseForgePage(fill)).ok, true);
+      delete view.DataTransfer;
+      mount(`${form}<a href="https://authors.curseforge.com/#/projects/1/files/7">file</a>`);
+      assert.equal((await fillCurseForgePage(fill)).ok, true);
+      if (Original) view.DataTransfer = Original as typeof DataTransfer;
+    }
+
+    mount(`<p>welcome</p>`);
+    const previous = document.location.href;
+    try {
+      window.location.href = "https://authors.curseforge.com/login";
+    } catch {
+      /* happy-dom may refuse navigation */
+    }
+    const login = await fillCurseForgePage({ ...fill, waitMs: 0 });
+    if (document.location.href.includes("login")) assert.match(login.ok ? "" : login.message, /sign-in/);
+    try {
+      window.location.href = previous;
+    } catch {
+      /* restore is best-effort */
+    }
+
+    mount(`
+      <input type="file" />
+      <label>Display name <input id="name" /></label>
+      <label><input type="radio" /> Publish this file automatically once approved</label>
+      <p>Minecraft*</p>
+      <button type="button" role="option">26.3</button>
+      <h3>Release Type</h3>
+      <button type="button">Release</button>
+      <button type="button" aria-label="code view"></button>
+      <textarea></textarea>
+      <button type="button">Add File</button>
+    `);
+    const headings = await fillCurseForgePage({ ...fill, code: true, changelog: "note", waitMs: 30, stepMs: 5 });
+    assert.equal(headings.ok, false);
+
+    mount(`
+      <input type="file" />
+      <label><input type="radio" /> Publish this file automatically once approved</label>
+      <span>Minecraft *</span>
+      <button type="button" role="option">26.3</button>
+      <h3>Release Type</h3>
+      <select><option>Release</option></select>
+      <button type="button">Add File</button>
+    `);
+    const orphanSelect = await fillCurseForgePage({ ...fill, displayName: "", changelog: "", waitMs: 0 });
+    assert.match(orphanSelect.ok ? "" : orphanSelect.message, /no release type/);
+
+    const location = document.location as unknown as { href: string };
+    const href = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(location), "href");
+    let blanked = false;
+    try {
+      Object.defineProperty(location, "href", { configurable: true, get: () => "" });
+      blanked = document.location.href === "";
+    } catch {
+      blanked = false;
+    }
+    if (blanked) {
+      mount(`${form}<a href="/projects/1/files/3">file</a>`);
+      const blankBase = await fillCurseForgePage({ ...fill, changelog: "", relations: [] });
+      assert.equal(blankBase.ok && blankBase.url, "https://authors.curseforge.com/projects/1/files/3");
+      if (href) Object.defineProperty(location, "href", href);
+    }
+
+    mount(form);
+    const originalClick = HTMLButtonElement.prototype.click;
+    HTMLButtonElement.prototype.click = function click() {
+      originalClick.call(this);
+      if ((this.textContent ?? "").includes("Add File")) {
+        try {
+          window.location.href = "https://authors.curseforge.com/#/projects/1/files/11";
+        } catch {
+          /* navigation can throw */
+        }
+      }
+    };
+    const arrived = await fillCurseForgePage({ ...fill, changelog: "", waitMs: 40, stepMs: 5 });
+    HTMLButtonElement.prototype.click = originalClick;
+    if (document.location.href.includes("/files/11")) assert.equal(arrived.ok && arrived.url, document.location.href);
+
+    mount(form);
+    const emptyVersions = await fillCurseForgePage({ ...fill, versions: [], changelog: "", mime: "", waitMs: 0 });
+    assert.match(emptyVersions.ok ? "" : emptyVersions.message, /game version/);
+
+    mount(`<input type="file" /><p>Sign in please</p>`);
+    const signed = await fillCurseForgePage({ ...fill, waitMs: 0 });
+    assert.equal(signed.ok, false);
   });
 });

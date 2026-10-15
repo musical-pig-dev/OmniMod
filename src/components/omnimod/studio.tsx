@@ -326,7 +326,9 @@ export function Delivery({
   const pct = progress.total === 0 ? 0 : progress.completed / progress.total;
   const left = progress.total === 0 ? 0 : Math.round((remaining / progress.total) * 100);
   const current = progress.current ? platformById(progress.current).name : null;
-  const done = remaining === 0 && progress.total > 0;
+  const failed = progress.failed ?? 0;
+  const finished = remaining === 0 && progress.total > 0;
+  const done = finished && failed === 0;
   return (
     <div className="px-1 py-4">
       <p className="truncate text-center text-sm text-mist">{fileName}</p>
@@ -351,11 +353,17 @@ export function Delivery({
         </span>
       </div>
       <p className="mt-8 text-center font-display text-4xl tracking-tight">
-        {done ? "Delivered" : `${remaining} remaining`}
+        {done ? "Delivered" : finished ? "Not delivered" : `${remaining} remaining`}
       </p>
       <p className="mt-2 text-center text-sm text-mist">
         <span>
-          {done ? `${progress.completed} of ${progress.total}` : current ? `On the way to ${current}` : "Packing"}
+          {done
+            ? `${progress.completed} of ${progress.total}`
+            : finished
+              ? `${failed} failed`
+              : current
+                ? `On the way to ${current}`
+                : "Packing"}
         </span>
         {done ? null : <span className="text-brass"> {left}%</span>}
       </p>

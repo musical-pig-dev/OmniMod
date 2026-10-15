@@ -222,6 +222,9 @@ describe("Studio", () => {
     expect(screen.getByText("Delivered")).toBeTruthy();
     expect(screen.getByText("2 of 2")).toBeTruthy();
     expect(screen.queryByText("0%")).toBeNull();
+    rerender(<Delivery fileName="pack.zip" progress={{ completed: 1, total: 1, current: null, failed: 1 }} />);
+    expect(screen.getByText("Not delivered")).toBeTruthy();
+    expect(screen.getByText("1 failed")).toBeTruthy();
     rerender(<Delivery fileName="" progress={{ completed: 0, total: 0, current: null }} />);
     expect(screen.getByText("0 remaining")).toBeTruthy();
     expect(screen.getByText("0%")).toBeTruthy();
