@@ -500,24 +500,47 @@ export async function fillCurseForgePage(fill: CurseFormFill): Promise<CurseFill
     return node as Element;
   }
 
+  function namedText(node: Element): string {
+    let text = "";
+    for (const child of node.childNodes) {
+      if (child.nodeType === 3) text += child.textContent as string;
+    }
+    return text.replace(/\s+/g, " ").replace("*", "").trim().toLowerCase();
+  }
+
+  function textInput(scope: ParentNode): HTMLInputElement | null {
+    for (const item of scope.querySelectorAll("input")) {
+      if (item instanceof HTMLInputElement && item.type !== "radio" && item.type !== "file") return item;
+    }
+    return null;
+  }
+
   function radioNamed(label: string): HTMLInputElement | null {
     const wanted = label.toLowerCase();
     for (const node of doc.querySelectorAll("label")) {
       if (!plain(node).toLowerCase().includes(wanted)) continue;
       const nested = node.querySelector("input[type='radio']");
       if (nested instanceof HTMLInputElement) return nested;
-      continue;
+      const linked = node.getAttribute("for");
+      const byId = linked ? doc.getElementById(linked) : null;
+      if (byId instanceof HTMLInputElement && byId.type === "radio") return byId;
+      const prev = node.previousElementSibling;
+      if (prev instanceof HTMLInputElement && prev.type === "radio") return prev;
     }
     return null;
   }
 
   function fieldInput(label: string): HTMLInputElement | null {
     const wanted = label.toLowerCase();
-    for (const node of doc.querySelectorAll("label")) {
-      if (!plain(node).toLowerCase().includes(wanted)) continue;
-      const nested = node.querySelector("input");
-      if (!(nested instanceof HTMLInputElement) || nested.type === "radio" || nested.type === "file") continue;
-      return nested;
+    for (const node of doc.querySelectorAll("label, span, p, div")) {
+      if (namedText(node) !== wanted) continue;
+      const nested = textInput(node);
+      if (nested) return nested;
+      const parent = node.parentElement;
+      if (parent && parent !== doc.body) {
+        const near = textInput(parent);
+        if (near) return near;
+      }
     }
     return null;
   }
@@ -604,13 +627,16 @@ export async function fillCurseForgePage(fill: CurseFormFill): Promise<CurseFill
     const parent = section.parentElement;
     const scope = parent && parent !== doc.body ? parent : section;
     const wanted = version.toLowerCase();
-    const chip = [...scope.querySelectorAll("[data-chip], span")].find((node) => plain(node).toLowerCase() === wanted);
+    const chip = [...scope.querySelectorAll("span, div, button, li, [data-chip]")].find((node) => {
+      if (node.getAttribute("role") === "option") return false;
+      return plain(node).toLowerCase().replace(/[×x✕]/g, "").trim() === wanted;
+    });
     if (chip) continue;
     const opener = scope.querySelector("button, [role='combobox']");
     if (opener) (opener as HTMLElement).click();
     const field = scope.querySelector("input:not([type='file']):not([type='radio'])");
     if (field) writeControl(field as HTMLInputElement, version);
-    const option = [...doc.querySelectorAll("[role='option']")].find((node) => plain(node).toLowerCase() === wanted);
+    const option = [...doc.querySelectorAll("[role='option'], li, button")].find((node) => plain(node).toLowerCase() === wanted);
     if (!(option instanceof HTMLElement)) {
       return { ok: false, message: `CurseForge has no Minecraft version ${version}. The tab was left open.` };
     }
@@ -629,8 +655,10 @@ export async function fillCurseForgePage(fill: CurseFormFill): Promise<CurseFill
     releaseSelect.dispatchEvent(new Event("change", { bubbles: true }));
   } else {
     const scope = parent && parent !== doc.body ? parent : releaseLabel;
-    const option = [...scope.querySelectorAll("[role='option'], button")].find(
-          (node) => plain(node).toLowerCase() === fill.releaseType.toLowerCase(),
+    const opener = scope.querySelector("button, [role='combobox']");
+    if (opener instanceof HTMLElement && plain(opener).toLowerCase() !== fill.releaseType.toLowerCase()) opener.click();
+    const option = [...doc.querySelectorAll("[role='option'], button")].find(
+      (node) => plain(node).toLowerCase() === fill.releaseType.toLowerCase(),
     );
     if (!(option instanceof HTMLElement)) {
       return { ok: false, message: "CurseForge form has no release type. The tab was left open." };

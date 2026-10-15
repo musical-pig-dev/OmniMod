@@ -577,6 +577,69 @@ describe("curseForge authors form", () => {
     assert.equal(typed.ok && typed.url, "https://authors.curseforge.com/#/projects/1/files/12");
     assert.equal((document.querySelector("#typed") as HTMLInputElement).value, "26.3");
 
+    mount(`
+      <input type="file" />
+      <div>
+        <div>Display name</div>
+        <input type="radio" />
+        <input id="shown" />
+      </div>
+      <input type="radio" id="auto" />
+      <label for="auto">Publish this file automatically once approved</label>
+      <div>
+        <span>Minecraft *</span>
+        <div>26.3 ×</div>
+        <button type="button">Versions</button>
+        <li>1.21.1</li>
+      </div>
+      <div>
+        <span>Release Type</span>
+        <button type="button">Release</button>
+        <div role="option">Alpha</div>
+      </div>
+      <div contenteditable="true"></div>
+      <button type="button">Add File</button>
+      <a href="https://authors.curseforge.com/#/projects/1/files/21">file</a>
+    `);
+    const shown = await fillCurseForgePage({
+      ...fill,
+      displayName: "MyMod",
+      versions: ["26.3", "1.21.1"],
+      releaseType: "Alpha",
+      changelog: "notes",
+      relations: [],
+    });
+    assert.equal(shown.ok && shown.url, "https://authors.curseforge.com/#/projects/1/files/21");
+    assert.equal((document.querySelector("#shown") as HTMLInputElement).value, "MyMod");
+
+    mount(`
+      <input type="file" />
+      <div><label>Display name</label><input type="radio" /></div>
+      <input type="radio" />
+      <label>Publish this file automatically once approved</label>
+      <span>Minecraft *</span>
+      <button type="button" role="option">26.3</button>
+      <label>Release Type</label>
+      <select><option>Release</option></select>
+      <button type="button">Add File</button>
+    `);
+    assert.match((await fillCurseForgePage({ ...fill, changelog: "" })).ok ? "" : "display name", /display name/);
+
+    mount(`
+      <input type="file" />
+      <label>Display name <input id="beside" /></label>
+      <input type="radio" />
+      <label>Publish this file automatically once approved</label>
+      <span>Minecraft *</span>
+      <button type="button" role="option">26.3</button>
+      <span>Release Type</span>
+      <button type="button" role="option">Release</button>
+      <button type="button">Add File</button>
+      <a href="https://authors.curseforge.com/#/projects/1/files/22">file</a>
+    `);
+    const beside = await fillCurseForgePage({ ...fill, displayName: "MyMod", changelog: "", relations: [] });
+    assert.equal(beside.ok && beside.url, "https://authors.curseforge.com/#/projects/1/files/22");
+
     mount(`${form}<p role="alert">These values were copied from the file "README.md.zip"</p>`);
     document.querySelector("button")?.addEventListener("click", () => {
       if ((document.activeElement as HTMLElement | null)?.textContent?.includes("Add File") || true) {
