@@ -17,23 +17,29 @@ jobs:
         with:
           fetch-depth: 0
       - id: decide
-        run: |
-          node scripts/main-decision.ts
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF: ${{ github.ref }}
+        run: node scripts/main-decision.js
 
   test:
     needs: gate
-    if: needs.gate.outputs.run_tests == 'true'
+    # Run unless the gate explicitly said false. Empty/missing still runs.
+    if: needs.gate.outputs.run_tests != 'false'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
       - run: npm ci
       - run: npm run test:coverage
 
   extension:
     needs: [gate, test]
+    # Build when the gate asked for it, and only after tests succeeded
+    # (or were skipped because the gate said not to run them).
     if: always() && needs.gate.outputs.build == 'true' && (needs.test.result == 'success' || needs.test.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
@@ -41,6 +47,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
       - run: npm ci
       - run: npm run build:chrome
         env:
