@@ -1,5 +1,15 @@
 import type { PlatformId } from "./catalog.ts";
-import type { PublishInput, Transport, TransportResult } from "./publish.ts";
+import {
+  curseForgeDocumentToken,
+  curseForgeFileBody,
+  curseForgeTab,
+  curseForgeViewUrl,
+  curseVersionCatalog,
+  resolveCurseVersionIds,
+  type Transport,
+  type TransportResult,
+  type PublishInput,
+} from "./publish.ts";
 import { studioTransport } from "./storage.ts";
 
 const MODRINTH = "https://api.modrinth.com/v2";
@@ -7,6 +17,7 @@ const MODRINTH_AGENT = "OmniMod/0.1";
 const NEXUS = "https://api.nexusmods.com/v3";
 const NEXUS_POLLS = 8;
 const NEXUS_POLL_MS = 1500;
+const CURSEFORGE = "https://authors.curseforge.com";
 
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -22,12 +33,12 @@ export function selectTransport(override?: Transport, dev = import.meta.env.DEV)
 export function liveTransport(fetchImpl: typeof fetch = fetch, pause: (ms: number) => Promise<void> = sleep): Transport {
   return async (id, input) => {
     if (id === "steam") {
-      return { ok: false, message: "Steam Workshop has no browser upload API. Use SteamCMD." };
+      return { ok: false, message: "Steam Workshop is not available until a later date." };
     }
     if (!input.file) return { ok: false, message: "Choose the package again. It is only kept until you publish." };
     const fields = input.fields ?? {};
-    if (id === "nexus") return publishNexus(fetchImpl, input, fields, pause);
     if (id === "curseforge") return publishCurseForge(fetchImpl, input, fields);
+    if (id === "nexus") return publishNexus(fetchImpl, input, fields, pause);
     if (id === "modrinth") return publishModrinth(fetchImpl, input, fields);
     if (id === "github") return publishGitHub(fetchImpl, input, fields);
     return publishThunderstore(fetchImpl, input, fields);
@@ -141,30 +152,6 @@ function nexusHeaders(apiKey: string): Record<string, string> {
 function safeNexusName(fileName: string): string {
   const cleaned = fileName.replace(/[^a-zA-Z0-9 _'().-]+/g, " ").trim().slice(0, 50);
   return cleaned || "package.zip";
-}
-
-async function publishCurseForge(
-  fetchImpl: typeof fetch,
-  input: PublishInput,
-  fields: Record<string, string>,
-): Promise<TransportResult> {
-  const body = new FormData();
-  body.set(
-    "metadata",
-    JSON.stringify({
-      changelog: input.changelog.trim(),
-      changelogType: "markdown",
-      displayName: input.fileName,
-      releaseType: "release",
-    }),
-  );
-  body.set("file", input.file!, input.fileName);
-  const response = await fetchImpl(
-    `https://upload.curseforge.com/api/projects/${encodeURIComponent((fields.projectId ?? "").trim())}/upload-file`,
-    { method: "POST", headers: { "x-api-token": (fields.token ?? "").trim() }, body },
-  );
-  if (!response.ok) return { ok: false, message: await errorText(response) };
-  return { ok: true };
 }
 
 async function publishModrinth(
@@ -363,8 +350,113 @@ function dataOf(value: unknown): Record<string, unknown> {
 }
 
 async function errorText(response: Response): Promise<string> {
-  const text = (await response.text()).trim();
-  if (!text) return `The host returned HTTP ${response.status}.`;
+  return hostMessage((await response.text()).trim(), response.status);
+}
+
+async function publishCurseForge(
+  fetchImpl: typeof fetch,
+  input: PublishInput,
+  fields: Record<string, string>,
+): Promise<TransportResult> {
+  const projectId = (fields.projectId ?? "").trim();
+  if (!projectId) return { ok: false, message: "CurseForge needs a project id." };
+  const file = input.file!;
+  const draft = curseForgeFileBody({
+    changelog: input.changelog,
+    fileName: input.fileName,
+    fileLength: file.size,
+    host: fields,
+    override: input.override,
+  });
+  if (draft.pendingNames.length > 0) {
+    const listed = await fetchImpl(`${CURSEFORGE}/_api/project-files/${encodeURIComponent(projectId)}/game-versions`, {
+      credentials: "include",
+      headers: { accept: "application/json" },
+    });
+    if (!listed.ok) return { ok: false, message: await errorText(listed) };
+    let payload: unknown;
+    try {
+      payload = await listed.json();
+    } catch {
+      return { ok: false, message: "CurseForge did not list game versions. Enter the version id." };
+    }
+    const catalog = curseVersionCatalog(payload);
+    const resolved = resolveCurseVersionIds(draft.versionRaw, catalog);
+    if (!resolved.ok) return resolved;
+    draft.body.gameVersionIds = resolved.ids;
+  } else if (draft.body.gameVersionIds.length === 0) {
+    return { ok: false, message: "CurseForge needs a game version id." };
+  }
+  const details = await fetchImpl(`${CURSEFORGE}/_api/project-files/${encodeURIComponent(projectId)}/upload-file-details`, {
+    method: "POST",
+    credentials: "include",
+    headers: { accept: "application/json", "content-type": "application/json" },
+    body: JSON.stringify(draft.body),
+  });
+  const detailText = (await details.text()).trim();
+  const detailType = details.headers.get("content-type") || "";
+  if (curseForgeDocumentToken(details.status, detailText, detailType)) {
+    const opened = await leaveCurseForgeTab(projectId);
+    return {
+      ok: false,
+      message: opened
+        ? "CurseForge blocked the silent upload. A background tab was left open."
+        : "CurseForge blocked the silent upload. Sign in on CurseForge and publish again.",
+    };
+  }
+  if (!details.ok) return { ok: false, message: hostMessage(detailText, details.status) };
+  let detailBody: unknown;
+  try {
+    detailBody = JSON.parse(detailText);
+  } catch {
+    return { ok: false, message: "CurseForge did not return an upload." };
+  }
+  const detail = dataOf(detailBody);
+  const uploadId = String(detail.uploadId ?? "").trim();
+  if (!uploadId) return { ok: false, message: "CurseForge did not return an upload." };
+  const chunk = new FormData();
+  chunk.set("chunkedUploadId", uploadId);
+  chunk.set("chunkIndex", "1");
+  chunk.set("totalChunks", "1");
+  chunk.set("file", file, input.fileName);
+  const uploaded = await fetchImpl(`${CURSEFORGE}/_api/project-files/${encodeURIComponent(projectId)}/upload-file-chunk`, {
+    method: "POST",
+    credentials: "include",
+    body: chunk,
+  });
+  if (!uploaded.ok) return { ok: false, message: await errorText(uploaded) };
+  let accepted = false;
+  try {
+    const body = await uploaded.json();
+    accepted = body === true || (typeof body === "object" && body !== null && (body as { data?: unknown }).data === true);
+  } catch {
+    accepted = false;
+  }
+  if (!accepted) return { ok: false, message: "CurseForge did not accept the file." };
+  const fileId = detail.fileId == null || String(detail.fileId).trim() === "" ? "" : String(detail.fileId).trim();
+  const slug = String(detail.slug ?? "").trim();
+  const url = curseForgeViewUrl({ fileId, slug, projectId });
+  return url ? { ok: true, url } : { ok: true };
+}
+
+async function leaveCurseForgeTab(projectId: string): Promise<boolean> {
+  const chromeApi = (globalThis as { chrome?: { tabs?: { create?: unknown } } }).chrome;
+  const create = chromeApi?.tabs?.create;
+  if (typeof create !== "function") return false;
+  try {
+    const plan = curseForgeTab(true);
+    await (create as (opts: { url: string; active: boolean }) => Promise<unknown>)({
+      url: `${CURSEFORGE}/#/projects/${encodeURIComponent(projectId)}/files/create`,
+      active: plan.active,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function hostMessage(text: string, status: number): string {
+  if (!text) return `The host returned HTTP ${status}.`;
   try {
     const body = JSON.parse(text) as {
       description?: string;
@@ -391,7 +483,7 @@ async function errorText(response: Response): Promise<string> {
 
 export function liveHost(id: PlatformId): string {
   if (id === "nexus") return NEXUS;
-  if (id === "curseforge") return "https://upload.curseforge.com";
+  if (id === "curseforge") return CURSEFORGE;
   if (id === "modrinth") return "https://api.modrinth.com";
   if (id === "github") return "https://api.github.com";
   return "https://thunderstore.io";

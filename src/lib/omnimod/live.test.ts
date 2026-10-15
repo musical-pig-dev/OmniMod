@@ -43,7 +43,7 @@ describe("live transport", () => {
     assert.equal(selectTransport(undefined, true).name, "");
     assert.notEqual(selectTransport(undefined, false), selectTransport(undefined, true));
     assert.equal(liveHost("nexus"), "https://api.nexusmods.com/v3");
-    assert.equal(liveHost("curseforge"), "https://upload.curseforge.com");
+    assert.equal(liveHost("curseforge"), "https://authors.curseforge.com");
     assert.equal(liveHost("modrinth"), "https://api.modrinth.com");
     assert.equal(liveHost("github"), "https://api.github.com");
     assert.equal(liveHost("thunderstore"), "https://thunderstore.io");
@@ -54,7 +54,9 @@ describe("live transport", () => {
 
   it("refuses steam and a missing package", async () => {
     const transport = host(async () => jsonResponse({}));
-    assert.match((await transport("steam", input({}))).message ?? "", /SteamCMD/);
+    assert.match((await transport("steam", input({}))).message ?? "", /later date/);
+    assert.match((await transport("curseforge", input({ projectId: "9" }))).message ?? "", /game version/);
+    assert.match((await transport("curseforge", input({}))).message ?? "", /project id/);
     const missing = await transport("github", { ...input({ repo: "a/b" }), file: null });
     assert.equal(missing.ok, false);
     const bare = await transport("modrinth", {
@@ -119,8 +121,8 @@ describe("live transport", () => {
     assert.match((await transport("nexus", input({ apiKey: "k", gameDomain: "site", modId: "missing" }))).message ?? "", /no id/);
     assert.equal((await transport("nexus", input({ gameDomain: "site", modId: "12" }))).ok, true);
     assert.match((await transport("nexus", input({ apiKey: "k", gameDomain: "gone", modId: "12" }))).message ?? "", /mod not found/);
-    assert.equal((await transport("curseforge", input({ token: "t", projectId: "9" }))).ok, true);
-    assert.equal((await transport("curseforge", input({}))).ok, true);
+    assert.match((await transport("curseforge", input({ projectId: "9" }))).message ?? "", /game version/);
+    assert.match((await transport("curseforge", input({}))).message ?? "", /project id/);
     assert.equal((await transport("modrinth", input({ token: "mrp", project: "lanterns" }))).ok, true);
     assert.equal((await transport("modrinth", input({}))).ok, true);
     assert.ok(calls.some((call) => call.startsWith("GET https://api.modrinth.com/v2/project/lanterns")));
@@ -133,7 +135,6 @@ describe("live transport", () => {
     assert.equal(thunder.ok && thunder.detail, "Team");
     const unnamed = await transport("thunderstore", input({ community: "riskofrain2" }, { file: pack }));
     assert.equal(unnamed.ok && unnamed.detail, "");
-    assert.ok(forms.includes("file,metadata"));
     assert.ok(forms.includes("data,file"));
   });
 
@@ -225,7 +226,7 @@ describe("live transport", () => {
     };
     const transport = host(fetchImpl);
     mode.value = "empty";
-    assert.match((await transport("curseforge", input({ token: "t", projectId: "1" }))).message ?? "", /422/);
+    assert.match((await transport("github", input({ token: "t", repo: "a/b" }))).message ?? "", /422/);
     mode.value = "plain";
     assert.match((await transport("modrinth", input({ token: "t", project: "p" }))).message ?? "", /not-json/);
     mode.value = "detail";
@@ -234,16 +235,16 @@ describe("live transport", () => {
     assert.match((await transport("github", input({ token: "t", repo: "nope" }))).message ?? "", /owner\/name/);
     assert.match((await transport("github", input({ token: "t" }))).message ?? "", /owner\/name/);
     mode.value = "title";
-    assert.match((await transport("curseforge", input({ token: "t", projectId: "1" }))).message ?? "", /Unprocessable/);
+    assert.match((await transport("github", input({ token: "t", repo: "a/b" }))).message ?? "", /Unprocessable/);
     mode.value = "message";
     assert.match(
       (await transport("thunderstore", input({ token: "t", namespace: "Team", community: "riskofrain2" }, { file: pack }))).message ?? "",
       /game version/,
     );
     mode.value = "error";
-    assert.match((await transport("curseforge", input({ token: "t", projectId: "1" }))).message ?? "", /unauthorized/);
+    assert.match((await transport("github", input({ token: "t", repo: "a/b" }))).message ?? "", /unauthorized/);
     mode.value = "cf";
-    assert.match((await transport("curseforge", input({ token: "t", projectId: "1" }))).message ?? "", /versions required/);
+    assert.match((await transport("github", input({ token: "t", repo: "a/b" }))).message ?? "", /versions required/);
     mode.value = "slot";
     assert.match((await transport("nexus", input({ apiKey: "k", modId: "1" }))).message ?? "", /upload slot/);
     mode.value = "notarget";
@@ -479,3 +480,171 @@ describe("live transport", () => {
     assert.match((await transport("thunderstore", input(ready, { file: partial }))).message ?? "", /manifest\.json/);
   });
 });
+
+describe("curseforge session upload", () => {
+  const versions = { data: [{ id: 17045, name: "26.3", slug: "26-3" }, { id: 9, name: "Other", slug: "fabric" }] };
+
+  function chromeStub(create: (opts: { url: string; active: boolean }) => Promise<unknown> | unknown) {
+    (globalThis as { chrome?: unknown }).chrome = { tabs: { create } };
+  }
+
+  function clearChrome() {
+    delete (globalThis as { chrome?: unknown }).chrome;
+  }
+
+  it("posts the live body, then the chunk, and returns the file link", async () => {
+    const calls: string[] = [];
+    const bodies: string[] = [];
+    const creds: Array<RequestCredentials | undefined> = [];
+    const keys: string[] = [];
+    const mode = { value: "ok" };
+    const fetchImpl: typeof fetch = async (url, init) => {
+      const target = String(url);
+      calls.push(`${init?.method ?? "GET"} ${target}`);
+      creds.push(init?.credentials);
+      const headers = new Headers(init?.headers);
+      keys.push(headers.get("x-api-key") ?? "");
+      if (init?.body && !(init.body instanceof FormData)) bodies.push(String(init.body));
+      if (target.endsWith("/game-versions")) {
+        if (mode.value === "lookup-fail") return jsonResponse({ message: "signed out" }, 401);
+        if (mode.value === "lookup-text") return new Response("nope", { status: 200 });
+        if (mode.value === "lookup-shape") return jsonResponse({ nope: true });
+        if (mode.value === "lookup-empty") return jsonResponse({ data: [] });
+        if (mode.value === "lookup-ambiguous") {
+          return jsonResponse({ data: [{ id: 1, name: "26.3" }, { id: 2, slug: "26.3" }] });
+        }
+        return jsonResponse(versions);
+      }
+      if (target.endsWith("/upload-file-details")) {
+        if (mode.value === "wall") return new Response("<html>login</html>", { status: 401, headers: { "content-type": "text/html" } });
+        if (mode.value === "wall-json") return jsonResponse({ error: "token" }, 403);
+        if (mode.value === "denied") return jsonResponse({ message: "versions required" }, 400);
+        if (mode.value === "empty-detail") return new Response(" ", { status: 200, headers: { "content-type": "" } });
+        if (mode.value === "bad-detail") return new Response("not-json", { status: 200 });
+        if (mode.value === "no-upload") return jsonResponse({ data: {} });
+        if (mode.value === "slug") return jsonResponse({ data: { uploadId: "up-1", fileId: 9172385, slug: "simple mod" } });
+        if (mode.value === "no-file") return jsonResponse({ data: { uploadId: "up-1" } });
+        if (mode.value === "blank-id") return jsonResponse({ data: { uploadId: "up-1", fileId: " " } });
+        return jsonResponse({ data: { uploadId: "up-1", fileId: 9172385 } });
+      }
+      if (target.endsWith("/upload-file-chunk")) {
+        if (init?.body instanceof FormData) {
+          bodies.push(
+            ["chunkedUploadId", "chunkIndex", "totalChunks", "file"]
+              .map((key) => `${key}=${String(init.body instanceof FormData ? init.body.get(key) : "")}`)
+              .join("&"),
+          );
+        }
+        if (mode.value === "chunk-fail") return jsonResponse({ message: "chunk rejected" }, 400);
+        if (mode.value === "chunk-false") return jsonResponse({ data: false });
+        if (mode.value === "chunk-text") return new Response("nope", { status: 200 });
+        if (mode.value === "chunk-null") return new Response("null", { status: 200, headers: { "content-type": "application/json" } });
+        if (mode.value === "chunk-raw") return new Response("true", { status: 200, headers: { "content-type": "application/json" } });
+        return jsonResponse({ data: true });
+      }
+      return jsonResponse({ message: "no" }, 500);
+    };
+    const transport = host(fetchImpl);
+    const sent = await transport(
+      "curseforge",
+      input({ projectId: "1744552", gameVersions: "17045", releaseType: "release", changelogType: "html" }),
+    );
+    assert.equal(sent.ok && sent.url, "https://authors.curseforge.com/#/projects/1744552/files/9172385");
+    assert.ok(calls.some((call) => call === "POST https://authors.curseforge.com/_api/project-files/1744552/upload-file-details"));
+    assert.ok(calls.some((call) => call.endsWith("/upload-file-chunk")));
+    assert.ok(!calls.some((call) => call.includes("game-versions")));
+    assert.ok(creds.every((item) => item === "include"));
+    assert.ok(keys.every((item) => item === ""));
+    const posted = JSON.parse(bodies[0] ?? "{}") as { gameVersionIds: number[]; changelogType: number; releaseType: number; changelog: string };
+    assert.deepEqual(posted.gameVersionIds, [17045]);
+    assert.equal(posted.changelogType, 1);
+    assert.equal(posted.releaseType, 1);
+    assert.equal(posted.changelog, "<p>Glass.</p>");
+    assert.equal("isMarkedForManualRelease" in posted, false);
+    assert.match(bodies.find((body) => body.startsWith("chunkedUploadId")) ?? "", /chunkedUploadId=up-1&chunkIndex=1&totalChunks=1/);
+
+    const named = await transport(
+      "curseforge",
+      input(
+        { projectId: "1744552", gameVersions: "1.20.1", publishWhen: "auto" },
+        { override: { gameVersions: "26.3", displayName: "Sample", publishWhen: "manual", releaseType: "alpha" } },
+      ),
+    );
+    assert.equal(named.ok, true);
+    const namedBody = JSON.parse(bodies.filter((body) => body.startsWith("{")).at(-1) ?? "{}") as {
+      gameVersionIds: number[];
+      displayName: string;
+      releaseType: number;
+      isMarkedForManualRelease?: boolean;
+    };
+    assert.deepEqual(namedBody.gameVersionIds, [17045]);
+    assert.equal(namedBody.displayName, "Sample");
+    assert.equal(namedBody.releaseType, 3);
+    assert.equal(namedBody.isMarkedForManualRelease, true);
+
+    mode.value = "slug";
+    const linked = await transport("curseforge", input({ projectId: "1744552", gameVersions: "17045" }));
+    assert.equal(linked.ok && linked.url, "https://www.curseforge.com/projects/simple%20mod/files/9172385");
+    mode.value = "no-file";
+    const quiet = await transport("curseforge", input({ projectId: "1744552", gameVersions: "17045" }));
+    assert.equal(quiet.ok, true);
+    assert.equal(quiet.ok && quiet.url, undefined);
+    mode.value = "blank-id";
+    const blankId = await transport("curseforge", input({ projectId: "1744552", gameVersions: "17045" }));
+    assert.equal(blankId.ok, true);
+    assert.equal(blankId.ok && blankId.url, undefined);
+    mode.value = "chunk-raw";
+    assert.equal((await transport("curseforge", input({ projectId: "1744552", gameVersions: "17045" }))).ok, true);
+
+    mode.value = "lookup-fail";
+    assert.match((await transport("curseforge", input({ projectId: "1744552", gameVersions: "26.3" }))).message ?? "", /signed out/);
+    mode.value = "lookup-text";
+    assert.match((await transport("curseforge", input({ projectId: "1744552", gameVersions: "26.3" }))).message ?? "", /did not list/);
+    mode.value = "lookup-shape";
+    assert.match((await transport("curseforge", input({ projectId: "1744552", gameVersions: "26.3" }))).message ?? "", /did not list/);
+    mode.value = "lookup-empty";
+    assert.match((await transport("curseforge", input({ projectId: "1744552", gameVersions: "26.3" }))).message ?? "", /no game version named/);
+    mode.value = "lookup-ambiguous";
+    assert.match((await transport("curseforge", input({ projectId: "1744552", gameVersions: "26.3" }))).message ?? "", /more than one/);
+    mode.value = "ok";
+    const fabric = await transport("curseforge", input({ projectId: "1744552", gameVersions: "fabric" }));
+    assert.equal(fabric.ok, true);
+
+    mode.value = "denied";
+    assert.match((await transport("curseforge", input({ projectId: "1744552", gameVersions: "17045" }))).message ?? "", /versions required/);
+    mode.value = "empty-detail";
+    assert.match((await transport("curseforge", input({ projectId: "1744552", gameVersions: "17045" }))).message ?? "", /did not return an upload/);
+    mode.value = "bad-detail";
+    assert.match((await transport("curseforge", input({ projectId: "1744552", gameVersions: "17045" }))).message ?? "", /did not return an upload/);
+    mode.value = "no-upload";
+    assert.match((await transport("curseforge", input({ projectId: "1744552", gameVersions: "17045" }))).message ?? "", /did not return an upload/);
+    mode.value = "chunk-fail";
+    assert.match((await transport("curseforge", input({ projectId: "1744552", gameVersions: "17045" }))).message ?? "", /chunk rejected/);
+    mode.value = "chunk-false";
+    assert.match((await transport("curseforge", input({ projectId: "1744552", gameVersions: "17045" }))).message ?? "", /did not accept/);
+    mode.value = "chunk-text";
+    assert.match((await transport("curseforge", input({ projectId: "1744552", gameVersions: "17045" }))).message ?? "", /did not accept/);
+    mode.value = "chunk-null";
+    assert.match((await transport("curseforge", input({ projectId: "1744552", gameVersions: "17045" }))).message ?? "", /did not accept/);
+
+    mode.value = "wall";
+    chromeStub(async (opts) => {
+      assert.equal(opts.active, false);
+      assert.match(opts.url, /1744552\/files\/create/);
+      return { id: 7 };
+    });
+    assert.match((await transport("curseforge", input({ projectId: "1744552", gameVersions: "17045" }))).message ?? "", /background tab/);
+    clearChrome();
+    assert.match((await transport("curseforge", input({ projectId: "1744552", gameVersions: "17045" }))).message ?? "", /Sign in/);
+    chromeStub(() => {
+      throw new Error("blocked");
+    });
+    assert.match((await transport("curseforge", input({ projectId: "1744552", gameVersions: "17045" }))).message ?? "", /Sign in/);
+    (globalThis as { chrome?: unknown }).chrome = { tabs: {} };
+    assert.match((await transport("curseforge", input({ projectId: "1744552", gameVersions: "17045" }))).message ?? "", /Sign in/);
+    clearChrome();
+    mode.value = "wall-json";
+    assert.match((await transport("curseforge", input({ projectId: "1744552", gameVersions: "17045" }))).message ?? "", /Sign in/);
+  });
+});
+

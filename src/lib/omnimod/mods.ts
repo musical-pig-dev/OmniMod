@@ -17,6 +17,7 @@ export type ModRecord = {
   changelog: string;
   configs: ConfigMap;
   publishedVersions: string[];
+  curseforgeOverride: Record<string, string>;
 };
 
 export type StoredMod = Partial<ModRecord> & {
@@ -55,6 +56,7 @@ export function createMod(name = "Untitled mod"): ModRecord {
     changelog: "",
     configs: defaultConfigs(),
     publishedVersions: [],
+    curseforgeOverride: {},
   };
 }
 
@@ -70,6 +72,15 @@ export function normalizeConfigs(value: Partial<ConfigMap> | undefined): ConfigM
   return configs;
 }
 
+function curseOverride(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const next: Record<string, string> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof item === "string") next[key] = item;
+  }
+  return next;
+}
+
 export function hydrateMod(raw: StoredMod, account: ConfigMap): ModRecord {
   const base = createMod(raw.name || "Untitled mod");
   const configs = raw.configs
@@ -83,6 +94,7 @@ export function hydrateMod(raw: StoredMod, account: ConfigMap): ModRecord {
     changelog: raw.changelog ?? "",
     configs,
     publishedVersions: Array.isArray(raw.publishedVersions) ? raw.publishedVersions.filter((item) => item.trim()) : [],
+    curseforgeOverride: curseOverride(raw.curseforgeOverride),
   };
 }
 
@@ -119,16 +131,20 @@ export function lastPublished(publishedVersions: string[] | undefined): string {
   return "";
 }
 
-export function recordPublish<T extends { fileName: string; version: string; changelog: string; publishedVersions: string[] }>(
-  mod: T,
-  version: string,
-  succeeded: boolean,
-): T {
+export function recordPublish<
+  T extends {
+    fileName: string;
+    version: string;
+    changelog: string;
+    publishedVersions: string[];
+    curseforgeOverride?: Record<string, string>;
+  },
+>(mod: T, version: string, succeeded: boolean): T {
   if (!succeeded) return mod;
   const key = version.trim();
   const publishedVersions =
     key && !versionUsed(mod.publishedVersions, key) ? [...mod.publishedVersions, key] : mod.publishedVersions;
-  return { ...mod, fileName: "", version: nextPatch(key), changelog: "", publishedVersions };
+  return { ...mod, fileName: "", version: nextPatch(key), changelog: "", publishedVersions, curseforgeOverride: {} };
 }
 
 export function targetsFromConfigs(configs: ConfigMap): TargetMap {

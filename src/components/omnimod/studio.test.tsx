@@ -97,7 +97,7 @@ describe("Studio", () => {
     await typeField(user, "Game versions", "1.20.1");
     await typeField(user, "Loaders", "fabric");
     await user.click(screen.getByRole("button", { name: /Hosts/ }));
-    await user.upload(document.querySelector('input[type="file"]') as HTMLInputElement, zip("notes.txt", 2048));
+    await user.upload(document.querySelector('input[type="file"]') as HTMLInputElement, zip("notes.jar", 2048));
     const refused = screen.getByRole("textbox", { name: "Version *" });
     await user.clear(refused);
     await user.type(refused, "0.0.0");
@@ -156,15 +156,21 @@ describe("Studio", () => {
     await typeField(user, "Project ID or slug", "lanterns");
     await typeField(user, "Game versions", "1.20.1");
     await typeField(user, "Loaders", "fabric");
+    expect(screen.getByRole("heading", { name: "API" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Bot" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Later" })).toBeTruthy();
+    expect(screen.getByText("Accepts .zip, .rar, .7z. The ready hosts need .jar.")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /Nexus Mods/ }));
+    expect(screen.getByLabelText("API key")).toHaveProperty("disabled", true);
     await user.click(screen.getByRole("button", { name: /Hosts/ }));
     expect(screen.getByText("More than one file is allowed. Largest file 500 MiB.")).toBeTruthy();
-    const huge = new File(["x"], "huge.zip");
+    const huge = new File(["x"], "huge.jar");
     Object.defineProperty(huge, "size", { value: 500 * 1024 * 1024 + 1 });
     const zone = screen.getByRole("button", { name: /Drop files/ });
     fireEvent.drop(zone, { dataTransfer: { files: [huge] } });
-    expect(screen.getByText("huge.zip is over the 500 MiB limit for the hosts on this mod.")).toBeTruthy();
-    fireEvent.drop(zone, { dataTransfer: { files: [zip("one.zip"), zip("two.zip")] } });
-    expect(screen.getByText("one.zip, two.zip")).toBeTruthy();
+    expect(screen.getByText("huge.jar is over the 500 MiB limit for the hosts on this mod.")).toBeTruthy();
+    fireEvent.drop(zone, { dataTransfer: { files: [zip("one.jar"), zip("two.jar")] } });
+    expect(screen.getByText("one.jar, two.jar")).toBeTruthy();
   });
 
   it("reads a version out of the file name and ignores an empty drop", async () => {
@@ -275,7 +281,25 @@ describe("Studio", () => {
   });
 
   it("renders a host card without a token link", () => {
-    const platform = { ...platformById("steam"), tokenUrl: undefined, tokenLabel: undefined };
+    const platform = {
+      ...platformById("steam"),
+      tokenUrl: undefined,
+      tokenLabel: undefined,
+      fields: [
+        ...platformById("steam").fields,
+        { key: "mode", label: "Mode", placeholder: "", choices: [{ value: "a", label: "A" }] },
+        {
+          key: "tone",
+          label: "Tone",
+          placeholder: "",
+          defaultValue: "low",
+          choices: [
+            { value: "low", label: "Low" },
+            { value: "high", label: "High" },
+          ],
+        },
+      ],
+    };
     render(
       <SiteCard
         platform={platform}
@@ -287,8 +311,91 @@ describe("Studio", () => {
     );
     expect(screen.queryByRole("link")).toBeNull();
     expect(screen.getByText("Steam Workshop")).toBeTruthy();
+    expect(screen.getByText("Later")).toBeTruthy();
+    expect(screen.getByText(/Not available until a later date/)).toBeTruthy();
+    expect(screen.getByRole("textbox", { name: "App ID" })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("combobox", { name: "Mode" })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("combobox", { name: "Tone" })).toHaveProperty("value", "low");
     expect(screen.getByText("One archive. No published size cap.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Clear" })).toHaveProperty("disabled", true);
+  });
+
+  it("edits CurseForge release defaults from the host card", async () => {
+    const user = userEvent.setup();
+    const seen: { fields: Record<string, string> }[] = [];
+    render(
+      <SiteCard
+        platform={platformById("curseforge")}
+        config={{ enabled: true, fields: { projectId: "1744552", releaseType: "beta" } }}
+        open
+        onToggleOpen={() => {}}
+        onChange={(next) => seen.push(next)}
+      />,
+    );
+    expect(screen.getByText("Bot")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Open CurseForge" }).getAttribute("href")).toBe("https://www.curseforge.com/");
+    expect(screen.getByRole("combobox", { name: "Release type" })).toHaveProperty("value", "beta");
+    expect(screen.getByRole("combobox", { name: "Publish when" })).toHaveProperty("value", "auto");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Release type" }), "alpha");
+    expect(seen.at(-1)?.fields.releaseType).toBe("alpha");
+  });
+
+  it("shows a view link only after a successful upload", () => {
+    render(
+      <ResultSlip
+        result={{
+          id: "curseforge",
+          status: "success",
+          message: "CurseForge accepted 1.",
+          url: "https://authors.curseforge.com/#/projects/2/files",
+        }}
+        index={1}
+      />,
+    );
+    expect(screen.getByRole("link", { name: "View upload" }).getAttribute("href")).toBe(
+      "https://authors.curseforge.com/#/projects/2/files",
+    );
+    cleanup();
+    render(<ResultSlip result={{ id: "curseforge", status: "success", message: "CurseForge accepted 1." }} index={0} />);
+    expect(screen.queryByRole("link", { name: "View upload" })).toBeNull();
+    cleanup();
+    render(
+      <ResultSlip result={{ id: "curseforge", status: "error", message: "no", url: "https://example.com" }} index={0} />,
+    );
+    expect(screen.queryByRole("link", { name: "View upload" })).toBeNull();
+  });
+
+  it("offers a CurseForge override only when that host is ready for the file", async () => {
+    const user = userEvent.setup();
+    render(<Studio transport={ok} />);
+    await addMod(user, "Lanterns");
+    expect(screen.queryByRole("button", { name: "CurseForge", exact: true })).toBeNull();
+    await user.click(screen.getByRole("button", { name: /Hosts/ }));
+    await user.click(screen.getByRole("button", { name: /CurseForge/ }));
+    await typeField(user, "Project ID", "1744552");
+    await typeField(user, "Game versions", "17045");
+    await user.click(screen.getByRole("button", { name: /Hosts/ }));
+    const override = screen.getByRole("button", { name: "CurseForge", exact: true });
+    expect(override.getAttribute("aria-expanded")).toBe("false");
+    await user.click(override);
+    expect(screen.getByText("Empty fields use the host key.")).toBeTruthy();
+    expect(screen.queryByLabelText("Project ID")).toBeNull();
+    expect(screen.queryByLabelText("Changelog format")).toBeNull();
+    await user.type(screen.getByLabelText("Display name"), "Sample");
+    await user.type(screen.getByLabelText("Game versions"), "26.3");
+    await user.type(screen.getByLabelText("Relations"), "jei:requiredDependency");
+    await user.selectOptions(screen.getByLabelText("Release type"), "beta");
+    await user.selectOptions(screen.getByLabelText("Release type"), "");
+    await user.selectOptions(screen.getByLabelText("Publish when"), "manual");
+    await user.click(screen.getByRole("button", { name: "CurseForge", exact: true }));
+    expect(screen.queryByText("Empty fields use the host key.")).toBeNull();
+    const zone = screen.getByRole("button", { name: /Drop a zip/ });
+    fireEvent.drop(zone, { dataTransfer: { files: [new File(["x"], "notes.txt")] } });
+    expect(screen.queryByRole("button", { name: "CurseForge", exact: true })).toBeNull();
+    fireEvent.drop(screen.getByRole("button", { name: /notes.txt/ }), { dataTransfer: { files: [zip("pack.zip")] } });
+    await user.click(screen.getByRole("button", { name: "CurseForge", exact: true }));
+    expect(screen.getByLabelText("Display name")).toHaveProperty("value", "Sample");
+    expect(screen.getByLabelText("Publish when")).toHaveProperty("value", "manual");
   });
 
   it("names an unknown host and ignores an empty file choice", async () => {

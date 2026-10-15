@@ -64,11 +64,12 @@ describe("mods", () => {
   });
 
   it("remembers a successful publish and clears the package draft", () => {
-    const mod = { ...createMod("Lanterns"), fileName: "lanterns.zip", version: "1.4.2", changelog: "Glass." };
+    const mod = { ...createMod("Lanterns"), fileName: "lanterns.zip", version: "1.4.2", changelog: "Glass.", curseforgeOverride: { displayName: "A" } };
     const sent = recordPublish(mod, "1.4.2", true);
     assert.equal(sent.fileName, "");
     assert.equal(sent.version, "1.4.3");
     assert.equal(sent.changelog, "");
+    assert.deepEqual(sent.curseforgeOverride, {});
     assert.deepEqual(sent.publishedVersions, ["1.4.2"]);
     assert.equal(lastPublished(sent.publishedVersions), "1.4.2");
     const again = recordPublish({ ...sent, fileName: "lanterns.zip", version: "1.4.2", changelog: "Again." }, "1.4.2", true);
@@ -76,9 +77,10 @@ describe("mods", () => {
   });
 
   it("keeps the draft when every host rejects the upload", () => {
-    const mod = { ...createMod("Lanterns"), fileName: "lanterns.zip", version: "1.4.2", changelog: "Glass." };
+    const mod = { ...createMod("Lanterns"), fileName: "lanterns.zip", version: "1.4.2", changelog: "Glass.", curseforgeOverride: { displayName: "A" } };
     const kept = recordPublish(mod, "1.4.2", false);
     assert.equal(kept, mod);
+    assert.equal(kept.curseforgeOverride.displayName, "A");
     assert.equal(lastPublished(kept.publishedVersions), "");
   });
 
@@ -88,6 +90,7 @@ describe("mods", () => {
     assert.match(modId({}), /^mod-\d+$/);
     assert.equal(createMod().name, "Untitled mod");
     assert.equal(createMod().version, "0.0.1");
+    assert.deepEqual(createMod().curseforgeOverride, {});
   });
 
   it("clears a successful publish that has no version text", () => {
@@ -106,6 +109,11 @@ describe("mods", () => {
     assert.equal(named.name, "Untitled mod");
     assert.equal(named.configs.nexus.enabled, false);
     assert.equal(named.configs.github.fields.token ?? "", "");
+    assert.deepEqual(named.curseforgeOverride, {});
+    const shaped = hydrateMod({ curseforgeOverride: { displayName: "A", n: 1 as never } }, defaultConfigs());
+    assert.deepEqual(shaped.curseforgeOverride, { displayName: "A" });
+    assert.deepEqual(hydrateMod({ curseforgeOverride: "nope" as never }, defaultConfigs()).curseforgeOverride, {});
+    assert.deepEqual(hydrateMod({ curseforgeOverride: [] as never }, defaultConfigs()).curseforgeOverride, {});
     const blank = hydrateMod({ name: "", publishedVersions: "nope" as never }, defaultConfigs());
     assert.equal(blank.name, "Untitled mod");
     assert.deepEqual(blank.publishedVersions, []);

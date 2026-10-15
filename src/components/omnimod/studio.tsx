@@ -14,10 +14,13 @@ import {
 import {
   PLATFORMS,
   acceptFiles,
+  acceptLabel,
   defaultConfigs,
   hostLimitDetail,
   isConfigured,
   platformById,
+  curseForgeOnForm,
+  typeBlock,
   uploadHint,
   uploadRule,
   type ConfigMap,
@@ -110,6 +113,17 @@ export function ResultSlip({ result, index }: { result: SiteResult; index: numbe
       <div className="min-w-0 flex-1">
         <p className="font-medium text-ivory">{name}</p>
         <p className="mt-1 text-sm leading-relaxed text-mist">{result.message}</p>
+        {sent && result.url ? (
+          <a
+            href={result.url}
+            target="_blank"
+            rel="noreferrer"
+            className="mt-1 inline-flex items-center gap-1 text-sm text-brass"
+          >
+            View upload
+            <ExternalLink className="size-3.5" aria-hidden="true" />
+          </a>
+        ) : null}
       </div>
       <span
         className={`shrink-0 -rotate-6 rounded border px-2 py-1 text-[10px] font-medium uppercase tracking-[0.16em] ${
@@ -128,19 +142,22 @@ export function SiteCard({
   open,
   onToggleOpen,
   onChange,
+  blocked = null,
 }: {
   platform: Platform;
   config: PlatformConfig;
   open: boolean;
   onToggleOpen: () => void;
   onChange: (next: PlatformConfig) => void;
+  blocked?: string | null;
 }) {
   const fields = platform.fields;
+  const locked = Boolean(platform.later || blocked);
   const saved = isConfigured(platform, config);
   const hasValue = fields.some((field) => (config.fields[field.key] ?? "").trim().length > 0);
   const panelId = useId();
   return (
-    <article className="rounded-card border border-line bg-panel">
+    <article className={`rounded-card border border-line bg-panel ${blocked ? "opacity-80" : ""}`}>
       <div className="flex items-center gap-3 px-4 py-3">
         <button
           type="button"
@@ -152,14 +169,18 @@ export function SiteCard({
           <span className="min-w-0 flex-1">
             <span className="flex flex-wrap items-center gap-2">
               <span className="font-medium text-ivory">{platform.name}</span>
-              {platform.experimental ? (
-                <span className="text-xs uppercase tracking-wide text-mist">Experimental</span>
+              {platform.later ? (
+                <span className="text-xs uppercase tracking-wide text-mist">Later</span>
+              ) : platform.lane === "bot" ? (
+                <span className="text-xs uppercase tracking-wide text-mist">Bot</span>
               ) : null}
             </span>
             <span className="mt-1 block text-sm leading-relaxed text-mist">{platform.summary}</span>
             <span className="mt-1 block text-sm text-mist">{hostLimitDetail(platform.id)}</span>
+            <span className="mt-1 block text-sm text-mist">{acceptLabel(platform)}</span>
+            {blocked ? <span className="mt-1 block text-sm text-bad">{blocked}</span> : null}
           </span>
-          <CredentialMark saved={saved} />
+          <CredentialMark saved={saved && !locked} />
           <ChevronDown
             className={`size-4 shrink-0 text-mist transition-transform ${open ? "rotate-180" : ""}`}
             aria-hidden="true"
@@ -168,28 +189,52 @@ export function SiteCard({
       </div>
       {open ? (
         <div id={panelId} className="space-y-3 border-t border-line px-4 py-4">
-          {fields.map((field) => (
+          {fields.map((field) => {
+            const stored = (config.fields[field.key] ?? "").trim();
+            return (
               <label key={field.key} className="block">
                 <span className="mb-1.5 block text-sm text-mist">{field.label}</span>
-                <input
-                  type={field.secret ? "password" : "text"}
-                  autoComplete="off"
-                  value={config.fields[field.key] ?? ""}
-                  placeholder={field.placeholder}
-                  onChange={(event) =>
-                    onChange({
-                      ...config,
-                      fields: { ...config.fields, [field.key]: event.target.value },
-                    })
-                  }
-                  className="h-11 w-full rounded-xl border border-line bg-ink px-3 text-ivory outline-none placeholder:text-mist/70 focus:border-brass"
-                />
+                {field.choices ? (
+                  <select
+                    value={stored || field.defaultValue || ""}
+                    disabled={locked}
+                    onChange={(event) =>
+                      onChange({
+                        ...config,
+                        fields: { ...config.fields, [field.key]: event.target.value },
+                      })
+                    }
+                    className="h-11 w-full rounded-xl border border-line bg-ink px-3 text-ivory outline-none focus:border-brass disabled:text-mist"
+                  >
+                    {field.choices.map((choice) => (
+                      <option key={choice.value} value={choice.value}>
+                        {choice.label}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    type={field.secret ? "password" : "text"}
+                    autoComplete="off"
+                    value={config.fields[field.key] ?? ""}
+                    placeholder={field.placeholder}
+                    disabled={locked}
+                    onChange={(event) =>
+                      onChange({
+                        ...config,
+                        fields: { ...config.fields, [field.key]: event.target.value },
+                      })
+                    }
+                    className="h-11 w-full rounded-xl border border-line bg-ink px-3 text-ivory outline-none placeholder:text-mist/70 focus:border-brass"
+                  />
+                )}
               </label>
-            ))}
+            );
+          })}
           <div className="flex flex-wrap items-center gap-3 pt-1">
             <button
               type="button"
-              disabled={!hasValue}
+              disabled={locked || !hasValue}
               onClick={() => onChange({ ...config, fields: {} })}
               className="min-h-11 rounded-full border border-line px-4 text-sm text-ivory hover:border-brass disabled:cursor-not-allowed disabled:text-mist"
             >
@@ -210,6 +255,63 @@ export function SiteCard({
         </div>
       ) : null}
     </article>
+  );
+}
+
+function CurseForgeOverride({
+  value,
+  onEdit,
+}: {
+  value: Record<string, string>;
+  onEdit: (next: Record<string, string>) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const fields = platformById("curseforge").fields.filter(
+    (field) => field.key !== "projectId" && field.key !== "changelogType",
+  );
+  return (
+    <div className="mt-3 rounded-xl border border-line">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+        className="flex min-h-11 w-full items-center justify-between px-3 text-left text-sm text-ivory"
+      >
+        CurseForge
+        <ChevronDown className={`size-4 text-mist transition-transform ${open ? "rotate-180" : ""}`} aria-hidden="true" />
+      </button>
+      {open ? (
+        <div className="space-y-3 border-t border-line px-3 py-3">
+          <p className="text-sm text-mist">Empty fields use the host key.</p>
+          {fields.map((field) => (
+            <label key={field.key} className="block">
+              <span className="mb-1.5 block text-sm text-mist">{field.label}</span>
+              {field.choices ? (
+                <select
+                  value={value[field.key] ?? ""}
+                  onChange={(event) => onEdit({ ...value, [field.key]: event.target.value })}
+                  className="h-11 w-full rounded-xl border border-line bg-ink px-3 text-ivory outline-none focus:border-brass"
+                >
+                  <option value="">Host key</option>
+                  {field.choices.map((choice) => (
+                    <option key={choice.value} value={choice.value}>
+                      {choice.label}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  value={value[field.key] ?? ""}
+                  placeholder={field.placeholder}
+                  onChange={(event) => onEdit({ ...value, [field.key]: event.target.value })}
+                  className="h-11 w-full rounded-xl border border-line bg-ink px-3 text-ivory outline-none placeholder:text-mist/70 focus:border-brass"
+                />
+              )}
+            </label>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -292,10 +394,11 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
       fileName: active?.fileName ?? "",
       version: active?.version ?? "",
       changelog: active?.changelog ?? "",
+      override: active?.curseforgeOverride,
     }),
     [active],
   );
-  const ready = readyCount(hostConfigs, { ...input, fileName: input.fileName || "pending.zip" });
+  const ready = readyCount(hostConfigs, { ...input, fileName: input.fileName || "pending" });
   const detailsReady = input.version.trim().length > 0 && input.changelog.trim().length > 0;
   const repeatVersion = versionUsed(active?.publishedVersions, input.version);
   const canPublish =
@@ -338,7 +441,7 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
   const visibleMods = mods.filter((mod) =>
     mods.length > 20 ? mod.name.toLowerCase().includes(query.trim().toLowerCase()) : true,
   );
-  const rule = uploadRule(hostConfigs);
+  const rule = uploadRule(hostConfigs, input.fileName);
 
   function patchMod(id: string, partial: Partial<ModRecord>) {
     setMods((list) => list.map((mod) => (mod.id === id ? { ...mod, ...partial } : mod)));
@@ -389,6 +492,7 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
           version: recorded.version,
           changelog: recorded.changelog,
           publishedVersions: recorded.publishedVersions,
+          curseforgeOverride: recorded.curseforgeOverride,
         });
         setFileSize(null);
         setFileError(null);
@@ -506,17 +610,25 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
             </div>
             <p className="px-1 text-sm text-mist">{uploadHint(rule)}</p>
             {active
-              ? PLATFORMS.map((platform) => (
-                  <SiteCard
-                    key={`${active.id}-${platform.id}`}
-                    platform={platform}
-                    config={active.configs[platform.id]}
-                    open={openId === platform.id}
-                    onToggleOpen={() =>
-                      setOpenId((current) => (current === platform.id ? null : platform.id))
-                    }
-                    onChange={(next) => update(platform.id, next)}
-                  />
+              ? (["api", "bot", "later"] as const).map((lane) => (
+                  <div key={lane} className="space-y-3">
+                    <h3 className="px-1 pt-2 text-xs uppercase tracking-[0.16em] text-mist">
+                      {lane === "api" ? "API" : lane === "bot" ? "Bot" : "Later"}
+                    </h3>
+                    {PLATFORMS.filter((platform) => platform.lane === lane).map((platform) => (
+                      <SiteCard
+                        key={`${active.id}-${platform.id}`}
+                        platform={platform}
+                        config={active.configs[platform.id]}
+                        open={openId === platform.id}
+                        blocked={typeBlock(platform, active.configs, active.fileName)}
+                        onToggleOpen={() =>
+                          setOpenId((current) => (current === platform.id ? null : platform.id))
+                        }
+                        onChange={(next) => update(platform.id, next)}
+                      />
+                    ))}
+                  </div>
                 ))
               : <p className="px-1 text-sm text-mist">Add a mod before saving host keys.</p>}
           </section>
@@ -716,7 +828,7 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
               <input
                 ref={fileRef}
                 type="file"
-                accept=".zip,.7z,.rar,application/zip"
+                accept={rule.extensions?.join(",") || ".zip,.7z,.rar,application/zip"}
                 multiple={rule.multiple}
                 className="sr-only"
                 onChange={(event) => onFile(event.target.files ?? undefined)}
@@ -749,6 +861,12 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
                   className="w-full resize-y rounded-xl border border-line bg-ink px-3 py-3 leading-relaxed outline-none placeholder:text-mist/70 focus:border-brass"
                 />
               </label>
+              {curseForgeOnForm(hostConfigs, input.fileName) ? (
+                <CurseForgeOverride
+                  value={active.curseforgeOverride}
+                  onEdit={(curseforgeOverride) => patchMod(active.id, { curseforgeOverride })}
+                />
+              ) : null}
               <button
                 type="button"
                 disabled={!canPublish}

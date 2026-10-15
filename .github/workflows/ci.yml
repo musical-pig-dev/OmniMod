@@ -6,156 +6,43 @@ on:
   push:
     branches: [main]
 
-permissions:
-  contents: read
-  checks: read
-  actions: read
-
 jobs:
   gate:
-    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     outputs:
-      decision: ${{ steps.decide.outputs.decision }}
+      run_tests: ${{ steps.decide.outputs.run_tests }}
+      build: ${{ steps.decide.outputs.build }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Decide whether main can skip tests
-        id: decide
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: node --experimental-strip-types scripts/main-decision.ts
+      - id: decide
+        run: |
+          node scripts/main-decision.ts
 
   test:
     needs: gate
-    if: always() && (github.event_name == 'pull_request' || needs.gate.outputs.decision == 'run-tests') && (needs.gate.result == 'success' || needs.gate.result == 'skipped')
+    if: needs.gate.outputs.run_tests == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
       - run: npm ci
-      - run: npm test
+      - run: npm run test:coverage
 
   extension:
     needs: [gate, test]
-    if: |
-      always() &&
-      github.event_name == 'push' &&
-      needs.gate.result == 'success' &&
-      (needs.gate.outputs.decision == 'build-extension' || needs.test.result == 'success')
+    if: always() && needs.gate.outputs.build == 'true' && (needs.test.result == 'success' || needs.test.result == 'skipped')
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
       - run: npm ci
-      - name: Choose the next patch
-        id: version
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          current=$(node -p "require('./browsers/chrome/public/manifest.json').version")
-          release_tags=$(gh release list --limit 200 --json tagName --jq '.[].tagName' || true)
-          git_tags=$(gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags" --jq 'if type == "array" then .[].ref else .ref end' || true)
-          tags=$(printf '%s\n%s\n' "$release_tags" "$git_tags" | sed 's|^refs/tags/||' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -u || true)
-          echo "Taken tags:"
-          echo "${tags:-none}"
-          version=$(CURRENT="$current" TAGS="$tags" node --experimental-strip-types --input-type=module -e '
-            import { nextFreeVersion } from "./src/lib/omnimod/mods.ts";
-            const next = nextFreeVersion(process.env.CURRENT ?? "", (process.env.TAGS ?? "").split(/\s+/).filter(Boolean));
-            if (!next) {
-              console.error("Could not choose the next patch.");
-              process.exit(1);
-            }
-            process.stdout.write(next);
-          ')
-          echo "Next version: $version"
-          node -e '
-            const fs = require("fs");
-            const path = "browsers/chrome/public/manifest.json";
-            const manifest = JSON.parse(fs.readFileSync(path, "utf8"));
-            manifest.version = process.argv[1];
-            fs.writeFileSync(path, JSON.stringify(manifest, null, 2) + "\n");
-          ' "$version"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-      - name: Build the Chrome extension
+      - run: npm run build:chrome
         env:
           VITE_GIT_SHA: ${{ github.sha }}
           VITE_GITHUB_REPOSITORY: ${{ github.repository }}
-        run: npm run build:chrome
-      - name: Pack the extension
-        run: (cd dist/chrome && zip -r ../../omnimod-chrome.zip .)
-      - name: Publish the release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          version="${{ steps.version.outputs.version }}"
-          for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
-            node -e '
-              const fs = require("fs");
-              const path = "dist/chrome/manifest.json";
-              const manifest = JSON.parse(fs.readFileSync(path, "utf8"));
-              manifest.version = process.argv[1];
-              fs.writeFileSync(path, JSON.stringify(manifest, null, 2) + "\n");
-            ' "$version"
-            (cd dist/chrome && rm -f ../../omnimod-chrome.zip && zip -r ../../omnimod-chrome.zip .)
-            tag="v${version}"
-            echo "Publishing ${tag}"
-            if gh release view "$tag" >/dev/null 2>&1 || gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" >/dev/null 2>&1; then
-              echo "${tag} is already taken."
-              version=$(node --experimental-strip-types --input-type=module -e '
-                import { nextPatch } from "./src/lib/omnimod/mods.ts";
-                const next = nextPatch(process.argv[1]);
-                if (!next) process.exit(1);
-                process.stdout.write(next);
-              ' "$version")
-              echo "Trying v${version}."
-              continue
-            fi
-            set +e
-            output=$(gh release create "$tag" omnimod-chrome.zip \
-              --target "$GITHUB_SHA" \
-              --title "OmniMod ${tag}" \
-              --notes "Chrome extension ${version}." \
-              --latest 2>&1)
-            status=$?
-            set -e
-            echo "$output"
-            if [ "$status" -eq 0 ]; then
-              exit 0
-            fi
-            if echo "$output" | grep -Eq "immutable release|already exists|tag_name was used"; then
-              version=$(node --experimental-strip-types --input-type=module -e '
-                import { nextPatch } from "./src/lib/omnimod/mods.ts";
-                const next = nextPatch(process.argv[1]);
-                if (!next) process.exit(1);
-                process.stdout.write(next);
-              ' "$version")
-              echo "Tag was taken. Trying v${version}."
-              continue
-            fi
-            if echo "$output" | grep -q "creations being restricted"; then
-              echo "A repository ruleset is blocking new tags. Settings, Rules, Rulesets: allow GitHub Actions to create tags."
-              exit 1
-            fi
-            exit "$status"
-          done
-          echo "Could not find a free tag."
-          exit 1
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: omnimod-chrome
-          path: omnimod-chrome.zip

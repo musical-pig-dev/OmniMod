@@ -1,26 +1,35 @@
 export const PLATFORM_IDS = [
   "nexus",
-  "curseforge",
   "modrinth",
   "github",
   "thunderstore",
+  "curseforge",
   "steam",
 ] as const;
 
 export type PlatformId = (typeof PLATFORM_IDS)[number];
+
+export type HostLane = "api" | "bot" | "later";
+
+export type FieldChoice = { value: string; label: string };
 
 export type PlatformField = {
   key: string;
   label: string;
   secret?: boolean;
   placeholder: string;
+  optional?: boolean;
+  defaultValue?: string;
+  choices?: FieldChoice[];
 };
 
 export type Platform = {
   id: PlatformId;
   name: string;
   summary: string;
-  experimental?: boolean;
+  lane: HostLane;
+  later?: boolean;
+  accepts?: string[];
   tokenUrl?: string;
   tokenLabel?: string;
   fields: PlatformField[];
@@ -31,6 +40,8 @@ export const PLATFORMS: Platform[] = [
     id: "nexus",
     name: "Nexus Mods",
     summary: "Upload API. A personal API key, the game from the URL, and the existing mod id.",
+    lane: "api",
+    accepts: [".zip", ".rar", ".7z"],
     tokenUrl: "https://www.nexusmods.com/",
     tokenLabel: "Open Nexus Mods",
     fields: [
@@ -40,20 +51,11 @@ export const PLATFORMS: Platform[] = [
     ],
   },
   {
-    id: "curseforge",
-    name: "CurseForge",
-    summary: "File API. An account token and the project id.",
-    tokenUrl: "https://console.curseforge.com/",
-    tokenLabel: "Open CurseForge console",
-    fields: [
-      { key: "token", label: "API token", secret: true, placeholder: "X-Api-Token" },
-      { key: "projectId", label: "Project ID", placeholder: "987654" },
-    ],
-  },
-  {
     id: "modrinth",
     name: "Modrinth",
     summary: "Versions API. A token with version create, the project, and the game versions and loaders that file supports.",
+    lane: "api",
+    accepts: [".jar"],
     tokenUrl: "https://modrinth.com/settings/pats",
     tokenLabel: "Create a Modrinth token",
     fields: [
@@ -67,6 +69,7 @@ export const PLATFORMS: Platform[] = [
     id: "github",
     name: "GitHub Releases",
     summary: "Releases API. A token that can write the repository.",
+    lane: "api",
     tokenUrl: "https://github.com/settings/tokens",
     tokenLabel: "Create a GitHub token",
     fields: [
@@ -78,6 +81,8 @@ export const PLATFORMS: Platform[] = [
     id: "thunderstore",
     name: "Thunderstore",
     summary: "Upload API. A service-account token, the team, and the community the package is listed in.",
+    lane: "api",
+    accepts: [".zip"],
     tokenUrl: "https://thunderstore.io/",
     tokenLabel: "Open Thunderstore",
     fields: [
@@ -87,12 +92,58 @@ export const PLATFORMS: Platform[] = [
     ],
   },
   {
+    id: "curseforge",
+    name: "CurseForge",
+    summary: "Session upload. Uses the CurseForge login already in this browser. A project id and game version ids. No API token.",
+    lane: "bot",
+    accepts: [".zip", ".jar"],
+    tokenUrl: "https://www.curseforge.com/",
+    tokenLabel: "Open CurseForge",
+    fields: [
+      { key: "projectId", label: "Project ID", placeholder: "987654" },
+      { key: "gameVersions", label: "Game versions", placeholder: "17045 or 26.3" },
+      {
+        key: "releaseType",
+        label: "Release type",
+        placeholder: "release",
+        defaultValue: "release",
+        choices: [
+          { value: "release", label: "Release" },
+          { value: "beta", label: "Beta" },
+          { value: "alpha", label: "Alpha" },
+        ],
+      },
+      {
+        key: "publishWhen",
+        label: "Publish when",
+        placeholder: "auto",
+        defaultValue: "auto",
+        choices: [
+          { value: "auto", label: "When it is approved" },
+          { value: "manual", label: "Keep it as a draft" },
+        ],
+      },
+      {
+        key: "changelogType",
+        label: "Changelog format",
+        placeholder: "html",
+        defaultValue: "html",
+        choices: [
+          { value: "html", label: "HTML" },
+          { value: "text", label: "Text" },
+          { value: "markdown", label: "Markdown" },
+        ],
+      },
+      { key: "relations", label: "Relations", placeholder: "jei:requiredDependency", optional: true },
+      { key: "displayName", label: "Display name", placeholder: "File name", optional: true },
+    ],
+  },
+  {
     id: "steam",
     name: "Steam Workshop",
-    summary: "SteamCMD handoff. Recorded here, marked experimental.",
-    experimental: true,
-    tokenUrl: "https://partner.steamgames.com/",
-    tokenLabel: "Steamworks docs",
+    summary: "Not available until a later date. A local helper will upload to Workshop.",
+    lane: "later",
+    later: true,
     fields: [
       { key: "appId", label: "App ID", placeholder: "480" },
       { key: "itemId", label: "Workshop item ID", placeholder: "1234567890" },
@@ -140,8 +191,14 @@ export function fieldValue(config: PlatformConfig, key: string): string {
   return (config.fields[key] ?? "").trim();
 }
 
+export function resolvedField(field: PlatformField, config: PlatformConfig): string {
+  const value = fieldValue(config, field.key);
+  if (value) return value;
+  return (field.defaultValue ?? "").trim();
+}
+
 export function isConfigured(platform: Platform, config: PlatformConfig): boolean {
-  return platform.fields.every((field) => fieldValue(config, field.key).length > 0);
+  return platform.fields.every((field) => field.optional || resolvedField(field, config).length > 0);
 }
 
 export type SiteReadiness = "ready" | "needs-setup" | "off";
@@ -171,14 +228,77 @@ export type UploadRule = {
   maxBytes: number | null;
   label: string;
   multiple: boolean;
+  extensions: string[] | null;
 };
 
-export function uploadRule(configs: ConfigMap): UploadRule {
-  const hosts = PLATFORMS.filter((platform) => {
+export function fileExtension(name: string): string {
+  const base = name.trim();
+  const dot = base.lastIndexOf(".");
+  if (dot <= 0) return "";
+  return base.slice(dot).toLowerCase();
+}
+
+export function acceptLabel(platform: Platform): string {
+  if (!platform.accepts?.length) return "Accepts any file type.";
+  return `Accepts ${platform.accepts.join(", ")}.`;
+}
+
+export function typeLock(configs: ConfigMap): string[] | null {
+  const lists: string[][] = [];
+  for (const platform of PLATFORMS) {
+    if (platform.lane !== "api" || !platform.accepts?.length) continue;
     const config = configs[platform.id];
-    return Boolean(config?.enabled && isConfigured(platform, config));
+    if (!config.enabled || !isConfigured(platform, config)) continue;
+    lists.push(platform.accepts);
+  }
+  if (lists.length === 0) return null;
+  return lists.reduce((shared, list) => shared.filter((ext) => list.includes(ext)));
+}
+
+export function typeBlock(platform: Platform, configs: ConfigMap, fileName: string): string | null {
+  if (platform.lane === "later") return null;
+  const accepts = platform.accepts;
+  const ext = fileExtension(fileName);
+  if (ext) {
+    if (!accepts?.length || accepts.includes(ext)) return null;
+    return `Accepts ${accepts.join(", ")}. This file is ${ext}.`;
+  }
+  const lock = typeLock(configs);
+  if (lock == null || !accepts?.length) return null;
+  if (lock.length === 0) return "These hosts do not accept the same file type.";
+  if (accepts.some((item) => lock.includes(item))) return null;
+  return `Accepts ${accepts.join(", ")}. The ready hosts need ${lock.join(", ")}.`;
+}
+
+export function curseForgeOnForm(configs: ConfigMap, fileName: string): boolean {
+  const platform = platformById("curseforge");
+  const config = configs.curseforge;
+  if (!config.enabled || !isConfigured(platform, config)) return false;
+  return !typeBlock(platform, configs, fileName);
+}
+
+function ruleExtensions(configs: ConfigMap): string[] | null {
+  const lock = typeLock(configs);
+  if (lock && lock.length === 0) {
+    const open = PLATFORMS.some((platform) => {
+      if (platform.lane !== "api" || platform.accepts?.length) return false;
+      const config = configs[platform.id];
+      return config.enabled && isConfigured(platform, config);
+    });
+    if (open) return null;
+  }
+  return lock;
+}
+
+export function uploadRule(configs: ConfigMap, fileName = ""): UploadRule {
+  const extensions = ruleExtensions(configs);
+  const hosts = PLATFORMS.filter((platform) => {
+    if (platform.lane !== "api") return false;
+    const config = configs[platform.id];
+    if (!config.enabled || !isConfigured(platform, config)) return false;
+    return !typeBlock(platform, configs, fileName);
   });
-  if (hosts.length === 0) return { hosts: 0, maxBytes: null, label: "", multiple: false };
+  if (hosts.length === 0) return { hosts: 0, maxBytes: null, label: "", multiple: false, extensions };
   let maxBytes: number | null = null;
   let label = "";
   for (const host of hosts) {
@@ -194,6 +314,7 @@ export function uploadRule(configs: ConfigMap): UploadRule {
     maxBytes,
     label,
     multiple: hosts.every((host) => HOST_UPLOAD[host.id].multiple),
+    extensions,
   };
 }
 
@@ -217,7 +338,16 @@ export function acceptFiles(
   version: string,
 ): { ok: true; fileName: string; version: string; size: number } | { ok: false; message: string } {
   if (files.length === 0) return { ok: false, message: "" };
+  if (rule.extensions && rule.extensions.length === 0) {
+    return { ok: false, message: "These hosts do not accept the same file type." };
+  }
   const chosen = rule.multiple ? files : files.slice(0, 1);
+  if (rule.extensions) {
+    const wrong = chosen.find((file) => !rule.extensions!.includes(fileExtension(file.name)));
+    if (wrong) {
+      return { ok: false, message: `${wrong.name} is not accepted. These hosts need ${rule.extensions.join(", ")}.` };
+    }
+  }
   if (rule.maxBytes != null) {
     const tooBig = chosen.find((file) => file.size > rule.maxBytes!);
     if (tooBig) return { ok: false, message: `${tooBig.name} is over the ${rule.label} limit for the hosts on this mod.` };
