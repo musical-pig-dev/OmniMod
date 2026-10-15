@@ -131,6 +131,22 @@ describe("Studio", () => {
     expect(screen.getByText("Add a mod before saving host keys.")).toBeTruthy();
   });
 
+  it("keeps the next mod selected when the active one is removed", async () => {
+    const user = userEvent.setup();
+    render(<Studio transport={ok} />);
+    await addMod(user, "Lanterns");
+    await user.click(screen.getByRole("button", { name: "1" }));
+    await user.click(screen.getByRole("button", { name: "Add a mod" }));
+    await user.type(screen.getByRole("textbox", { name: "New mod name" }), "Clock");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    await user.click(screen.getByRole("button", { name: "2" }));
+    await user.click(screen.getByRole("button", { name: "Lanterns —" }));
+    await user.click(screen.getByRole("button", { name: "2" }));
+    await user.click(screen.getByRole("button", { name: "Remove Lanterns" }));
+    expect(screen.getByRole("button", { name: "Remove Clock" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Remove Lanterns" })).toBeNull();
+  });
+
   it("hides mod search until there are more than 20 mods", async () => {
     const user = userEvent.setup();
     render(<Studio transport={ok} />);
