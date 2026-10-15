@@ -864,5 +864,151 @@ describe("curseForge authors form", () => {
     mount(`<input type="file" /><p>Sign in please</p>`);
     const signed = await fillCurseForgePage({ ...fill, waitMs: 0 });
     assert.equal(signed.ok, false);
+
+    const authors = `
+      <input class="dzu-input" type="file" accept=".zip" />
+      <div class="MuiFormControl-root">
+        <div><div><span>Display name</span></div></div>
+        <div><input id="mui-name" class="MuiInputBase-input" value="test-mod.jar" /></div>
+      </div>
+      <label><input type="radio" value="false" checked /> Publish this file automatically once approved</label>
+      <label><input type="radio" value="true" /> I would like to publish this file manually once approved</label>
+      <div class="MuiFormControl-root">
+        <div><span>Minecraft</span></div>
+        <span class="MuiChip-label">26.3</span>
+      </div>
+      <div class="MuiFormControl-root">
+        <div><span>Release Type</span></div>
+        <div role="combobox">Release</div>
+      </div>
+      <div role="combobox">WYSIWYG</div>
+      <div role="option">Markdown</div>
+      <textarea aria-hidden="true" id="tiny-react_1"></textarea>
+      <textarea class="mde-text" id="md"></textarea>
+      <button type="button">Add File</button>
+      <a href="https://authors.curseforge.com/#/projects/1/files/30">file</a>
+    `;
+    mount(authors);
+    const mui = await fillCurseForgePage({ ...fill, code: true, changelog: "notes", relations: [] });
+    assert.equal(mui.ok && mui.url, "https://authors.curseforge.com/#/projects/1/files/30");
+    assert.equal((document.querySelector("#mui-name") as HTMLInputElement).value, "Sample");
+    assert.equal((document.querySelector("#md") as HTMLTextAreaElement).value, "notes");
+    assert.equal((document.querySelector("#tiny-react_1") as HTMLTextAreaElement).value, "");
+
+    mount(authors.replace(">WYSIWYG<", ">Markdown<").replace('<div role="option">Markdown</div>', ""));
+    const alreadyMd = await fillCurseForgePage({ ...fill, code: true, changelog: "kept", relations: [] });
+    assert.equal(alreadyMd.ok, true);
+    assert.equal((document.querySelector("#md") as HTMLTextAreaElement).value, "kept");
+
+    mount(authors.replace('<div role="option">Markdown</div>', ""));
+    const missingMode = await fillCurseForgePage({ ...fill, code: true, changelog: "still", relations: [] });
+    assert.equal((document.querySelector("#md") as HTMLTextAreaElement).value, "still");
+    assert.equal(missingMode.ok, true);
+
+    mount(`
+      <input type="file" />
+      <label>Display name <input id="name" /></label>
+      <label><input type="radio" /> Publish this file automatically once approved</label>
+      <span>Minecraft *</span>
+      <button type="button" role="option">26.3</button>
+      <span>Release Type</span>
+      <button type="button" role="option">Release</button>
+      <button type="button">Add File</button>
+      <iframe class="tox-edit-area__iframe" srcdoc="<html><body></body></html>"></iframe>
+      <a href="https://authors.curseforge.com/#/projects/1/files/31">file</a>
+    `);
+    const frame = document.querySelector("iframe") as HTMLIFrameElement;
+    const framed = await fillCurseForgePage({ ...fill, changelog: "<p>Glass.</p>", relations: [] });
+    assert.equal(framed.ok && framed.url, "https://authors.curseforge.com/#/projects/1/files/31");
+    assert.equal(frame.contentDocument?.body.innerHTML, "<p>Glass.</p>");
+
+    mount(`
+      <input type="file" />
+      <label>Display name <input id="name" /></label>
+      <label><input type="radio" /> Publish this file automatically once approved</label>
+      <span>Minecraft *</span>
+      <button type="button" role="option">26.3</button>
+      <span>Release Type</span>
+      <button type="button" role="option">Release</button>
+      <button type="button">Add File</button>
+      <iframe class="tox-edit-area__iframe" srcdoc="<html><body></body></html>"></iframe>
+      <a href="https://authors.curseforge.com/#/projects/1/files/32">file</a>
+    `);
+    const plainFrame = document.querySelector("iframe") as HTMLIFrameElement;
+    const plainWrote = await fillCurseForgePage({ ...fill, changelog: "plain glass", relations: [] });
+    assert.equal(plainWrote.ok, true);
+    assert.equal(plainFrame.contentDocument?.body.textContent, "plain glass");
+
+    const win = window as unknown as {
+      tinymce?: { get: (id: string) => { setContent: (value: string) => void } | null };
+    };
+    let stored = "";
+    win.tinymce = {
+      get(id: string) {
+        return id === "tiny-react_9" ? { setContent(value: string) { stored = value; } } : null;
+      },
+    };
+    mount(`
+      <input type="file" />
+      <label>Display name <input /></label>
+      <label><input type="radio" /> Publish this file automatically once approved</label>
+      <span>Minecraft *</span>
+      <button type="button" role="option">26.3</button>
+      <span>Release Type</span>
+      <button type="button" role="option">Release</button>
+      <textarea id="tiny-react_9"></textarea>
+      <div role="combobox">Markdown</div>
+      <div role="option">WYSIWYG</div>
+      <button type="button">Add File</button>
+      <a href="https://authors.curseforge.com/#/projects/1/files/33">file</a>
+    `);
+    const viaTiny = await fillCurseForgePage({ ...fill, changelog: "<p>via tiny</p>", relations: [] });
+    assert.equal(viaTiny.ok && viaTiny.url, "https://authors.curseforge.com/#/projects/1/files/33");
+    assert.equal(stored, "<p>via tiny</p>");
+
+    win.tinymce = { get: () => null };
+    mount(`
+      <input type="file" />
+      <label>Display name <input /></label>
+      <label><input type="radio" /> Publish this file automatically once approved</label>
+      <span>Minecraft *</span>
+      <button type="button" role="option">26.3</button>
+      <span>Release Type</span>
+      <button type="button" role="option">Release</button>
+      <textarea id="tiny-react_9"></textarea>
+      <iframe class="tox-edit-area__iframe" srcdoc="<html><body></body></html>"></iframe>
+      <button type="button">Add File</button>
+      <a href="https://authors.curseforge.com/#/projects/1/files/34">file</a>
+    `);
+    const emptyTiny = document.querySelector("iframe") as HTMLIFrameElement;
+    const fellBack = await fillCurseForgePage({ ...fill, changelog: "fallback", relations: [] });
+    assert.equal(fellBack.ok, true);
+    assert.equal(emptyTiny.contentDocument?.body.textContent, "fallback");
+
+    win.tinymce = { get: () => null };
+    mount(`
+      <input type="file" />
+      <label>Display name <input /></label>
+      <label><input type="radio" /> Publish this file automatically once approved</label>
+      <span>Minecraft *</span>
+      <button type="button" role="option">26.3</button>
+      <span>Release Type</span>
+      <button type="button" role="option">Release</button>
+      <button type="button">Add File</button>
+      <iframe class="tox-edit-area__iframe" srcdoc="<html><body></body></html>"></iframe>
+    `);
+    const bare = document.querySelector("iframe") as HTMLIFrameElement;
+    bare.contentDocument?.body?.remove();
+    const noBody = await fillCurseForgePage(fill);
+    assert.match(noBody.ok ? "" : noBody.message, /changelog/);
+    bare.remove();
+    const quiet = document.createElement("iframe");
+    quiet.className = "tox-edit-area__iframe";
+    quiet.srcdoc = "<html><body></body></html>";
+    document.body.appendChild(quiet);
+    Object.defineProperty(quiet, "contentDocument", { configurable: true, get: () => null });
+    const closed = await fillCurseForgePage(fill);
+    assert.match(closed.ok ? "" : closed.message, /changelog/);
+    delete win.tinymce;
   });
 });

@@ -561,15 +561,69 @@ export async function fillCurseForgePage(fill: CurseFormFill): Promise<CurseFill
     const wanted = label.toLowerCase();
     for (const node of doc.querySelectorAll("label, span, p, div")) {
       if (namedText(node) !== wanted) continue;
-      const nested = textInput(node);
-      if (nested) return nested;
-      const parent = node.parentElement;
-      if (parent && parent !== doc.body) {
-        const near = textInput(parent);
+      let scope: Element | null = node;
+      while (scope && scope !== doc.body) {
+        const near = textInput(scope);
         if (near) return near;
+        scope = scope.parentElement;
       }
     }
     return null;
+  }
+
+  function scopeOf(node: Element): Element {
+    const form = node.closest(".MuiFormControl-root");
+    if (form) return form;
+    const parent = node.parentElement;
+    if (parent && parent !== doc.body) return parent;
+    return node;
+  }
+
+  function modeCombobox(): HTMLElement | null {
+    for (const node of doc.querySelectorAll("[role='combobox']")) {
+      const text = plain(node).toLowerCase();
+      if (text === "wysiwyg" || text === "markdown") return node as HTMLElement;
+    }
+    return null;
+  }
+
+  function writeTiny(html: string): boolean {
+    const api = (doc.defaultView as { tinymce?: { get: (id: string) => { setContent: (value: string) => void } | null } }).tinymce;
+    const hidden = doc.querySelector("textarea[id^='tiny-react']");
+    if (api && hidden instanceof HTMLTextAreaElement) {
+      const editor = api.get(hidden.id);
+      if (editor) {
+        editor.setContent(html);
+        return true;
+      }
+    }
+    const frame = doc.querySelector("iframe.tox-edit-area__iframe");
+    if (!(frame instanceof HTMLIFrameElement)) return false;
+    const inner = frame.contentDocument;
+    if (!inner || !inner.body) return false;
+    const body = inner.body;
+    if (/<[a-z][\s\S]*>/i.test(html)) body.innerHTML = html;
+    else body.textContent = html;
+    body.dispatchEvent(new Event("input", { bubbles: true }));
+    return true;
+  }
+
+  async function pickMode(wanted: string): Promise<boolean> {
+    const box = modeCombobox();
+    if (!box) return false;
+    if (plain(box).toLowerCase() === wanted) return true;
+    box.click();
+    let picked: HTMLElement | null = null;
+    await waitFor(() => {
+      const option = [...doc.querySelectorAll("[role='option'], li")].find((node) => plain(node).toLowerCase() === wanted);
+      if (option instanceof HTMLElement) {
+        picked = option;
+        return true;
+      }
+      return false;
+    });
+    if (picked) picked.click();
+    return true;
   }
 
   function writeControl(el: HTMLInputElement | HTMLTextAreaElement, value: string): void {
@@ -616,7 +670,7 @@ export async function fillCurseForgePage(fill: CurseFormFill): Promise<CurseFill
   let fileInput: HTMLInputElement | null = null;
   const ready = await waitFor(() => {
     if (isLogin()) return true;
-    const found = doc.querySelector("input[type='file']");
+    const found = doc.querySelector("input.dzu-input[type='file'], input[type='file']");
     if (found) fileInput = found as HTMLInputElement;
     return fileInput != null || isLogin();
   });
@@ -651,8 +705,7 @@ export async function fillCurseForgePage(fill: CurseFormFill): Promise<CurseFill
 
   for (const version of fill.versions) {
     const section = heading("Minecraft") as Element;
-    const parent = section.parentElement;
-    const scope = parent && parent !== doc.body ? parent : section;
+    const scope = scopeOf(section);
     const wanted = version.toLowerCase();
     const chip = [...scope.querySelectorAll("span, div, button, li, [data-chip]")].find((node) => {
       if (node.getAttribute("role") === "option") return false;
@@ -660,10 +713,14 @@ export async function fillCurseForgePage(fill: CurseFormFill): Promise<CurseFill
     });
     if (chip) continue;
     const opener = scope.querySelector("button, [role='combobox']");
-    if (opener) (opener as HTMLElement).click();
+    if (opener instanceof HTMLElement) opener.click();
     const field = scope.querySelector("input:not([type='file']):not([type='radio'])");
-    if (field) writeControl(field as HTMLInputElement, version);
-    const option = [...doc.querySelectorAll("[role='option'], li, button")].find((node) => plain(node).toLowerCase() === wanted);
+    if (field instanceof HTMLInputElement) writeControl(field, version);
+    let option: Element | undefined;
+    await waitFor(() => {
+      option = [...doc.querySelectorAll("[role='option'], li, button")].find((node) => plain(node).toLowerCase() === wanted);
+      return option instanceof HTMLElement;
+    });
     if (!(option instanceof HTMLElement)) {
       return { ok: false, message: `CurseForge has no Minecraft version ${version}. The tab was left open.` };
     }
@@ -671,45 +728,55 @@ export async function fillCurseForgePage(fill: CurseFormFill): Promise<CurseFill
   }
 
   const releaseLabel = heading("Release Type") as Element;
-  const nested = releaseLabel.querySelector("select");
-  const parent = releaseLabel.parentElement;
-  const sibling = parent && parent !== doc.body ? parent.querySelector("select") : null;
-  const releaseSelect = nested ?? sibling;
+  const releaseScope = scopeOf(releaseLabel);
+  const releaseSelect = releaseScope.querySelector("select");
   if (releaseSelect instanceof HTMLSelectElement) {
     const option = [...releaseSelect.options].find((item) => plain(item).toLowerCase() === fill.releaseType.toLowerCase());
     if (!option) return { ok: false, message: `CurseForge has no release type ${fill.releaseType}. The tab was left open.` };
     releaseSelect.value = option.value;
     releaseSelect.dispatchEvent(new Event("change", { bubbles: true }));
   } else {
-    const scope = parent && parent !== doc.body ? parent : releaseLabel;
-    const opener = scope.querySelector("button, [role='combobox']");
-    if (opener instanceof HTMLElement && plain(opener).toLowerCase() !== fill.releaseType.toLowerCase()) opener.click();
-    const option = [...doc.querySelectorAll("[role='option'], button")].find(
-      (node) => plain(node).toLowerCase() === fill.releaseType.toLowerCase(),
-    );
-    if (!(option instanceof HTMLElement)) {
-      return { ok: false, message: "CurseForge form has no release type. The tab was left open." };
+    const opener = releaseScope.querySelector("[role='combobox'], button");
+    const showing = opener instanceof HTMLElement ? plain(opener).toLowerCase() : "";
+    if (showing !== fill.releaseType.toLowerCase()) {
+      if (opener instanceof HTMLElement) opener.click();
+      let option: Element | undefined;
+      await waitFor(() => {
+        option = [...doc.querySelectorAll("[role='option'], button")].find(
+          (node) => plain(node).toLowerCase() === fill.releaseType.toLowerCase(),
+        );
+        return option instanceof HTMLElement;
+      });
+      if (!(option instanceof HTMLElement)) {
+        return { ok: false, message: "CurseForge form has no release type. The tab was left open." };
+      }
+      option.click();
     }
-    option.click();
   }
 
   if (fill.changelog) {
     if (fill.code) {
-      const codeButton = buttonNamed("</>") ?? buttonNamed("code");
-      if (codeButton) codeButton.click();
-      const area = doc.querySelector("textarea");
+      const switched = await pickMode("markdown");
+      if (!switched) {
+        const codeButton = buttonNamed("</>") ?? buttonNamed("code");
+        if (codeButton) codeButton.click();
+      }
+      const marked = doc.querySelector("textarea.mde-text");
+      const area = marked instanceof HTMLTextAreaElement ? marked : doc.querySelector("textarea:not([aria-hidden='true'])");
       if (!(area instanceof HTMLTextAreaElement)) {
         return { ok: false, message: "CurseForge changelog editor did not open. The tab was left open." };
       }
       writeControl(area, fill.changelog);
     } else {
+      await pickMode("wysiwyg");
       const editor = doc.querySelector("[contenteditable='true']");
-      if (!(editor instanceof HTMLElement)) {
+      if (editor instanceof HTMLElement) {
+        if (/<[a-z][\s\S]*>/i.test(fill.changelog)) editor.innerHTML = fill.changelog;
+        else editor.textContent = fill.changelog;
+        editor.dispatchEvent(new Event("input", { bubbles: true }));
+      } else if (!writeTiny(fill.changelog)) {
         return { ok: false, message: "CurseForge changelog editor did not open. The tab was left open." };
       }
-      if (/<[a-z][\s\S]*>/i.test(fill.changelog)) editor.innerHTML = fill.changelog;
-      else editor.textContent = fill.changelog;
-      editor.dispatchEvent(new Event("input", { bubbles: true }));
     }
   }
 
