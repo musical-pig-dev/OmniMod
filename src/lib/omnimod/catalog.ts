@@ -123,12 +123,12 @@ export const PLATFORMS: Platform[] = [
       },
       {
         key: "publishWhen",
-        label: "Publish when",
+        label: "Release options",
         placeholder: "auto",
         defaultValue: "auto",
         choices: [
-          { value: "auto", label: "When it is approved" },
-          { value: "manual", label: "Keep it as a draft" },
+          { value: "auto", label: "Publish this file automatically once approved" },
+          { value: "manual", label: "I would like to publish this file manually once approved" },
         ],
       },
       {

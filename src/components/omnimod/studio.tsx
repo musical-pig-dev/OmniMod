@@ -1,14 +1,17 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Check,
   ChevronDown,
   ChevronRight,
+  Copy,
   ExternalLink,
   Gamepad2,
   KeyRound,
   Lock,
   LockOpen,
   Package,
+  PackageCheck,
+  PackageX,
   Upload,
 } from "lucide-react";
 import {
@@ -32,6 +35,7 @@ import {
   createMod,
   lastPublished,
   nameTaken,
+  normalizeConfigs,
   recordPublish,
   versionUsed,
   type ModRecord,
@@ -56,6 +60,7 @@ import {
   ticketBody,
   ticketHref,
   ticketTitle,
+  withCurseForgePage,
   type PublishInput,
   type SiteResult,
   type PublishProgress,
@@ -507,58 +512,301 @@ function CurseForgeOverride({
   );
 }
 
+export type ReleaseNote = {
+  name: string;
+  version: string;
+  notes: string;
+  links: { host: string; url: string }[];
+};
+
+export function releasePost(note: ReleaseNote): string {
+  const name = note.name.trim() || "Untitled mod";
+  const version = note.version.trim();
+  const notes = note.notes.trim();
+  const places = note.links
+    .filter((link) => link.url.trim())
+    .map((link) => `${link.host}\n${link.url.trim()}`);
+  return [name, version ? `Version ${version}` : "", notes, ...places].filter(Boolean).join("\n\n");
+}
+
 export function Delivery({
   fileName,
   progress,
+  failures = [],
 }: {
   fileName: string;
   progress: PublishProgress;
+  failures?: string[];
 }) {
   const remaining = Math.max(progress.total - progress.completed, 0);
   const pct = progress.total === 0 ? 0 : progress.completed / progress.total;
-  const left = progress.total === 0 ? 0 : Math.round((remaining / progress.total) * 100);
   const current = progress.current ? platformById(progress.current).name : null;
   const failed = progress.failed ?? 0;
   const finished = remaining === 0 && progress.total > 0;
-  const done = finished && failed === 0;
+  const sent = Math.max(progress.completed - failed, 0);
+  const failureLine = failures.length > 0 ? `${failures.join(", ")} failed` : `${failed} failed`;
+
   return (
     <div className="px-1 py-4">
-      <p className="truncate text-center text-sm text-mist">{fileName}</p>
-      <div className="relative mx-auto mt-10 h-16 max-w-sm">
-        <div className="absolute top-1/2 right-2 left-2 h-px -translate-y-1/2 bg-line" />
-        <div
-          className="absolute top-1/2 left-2 h-px -translate-y-1/2 bg-brass transition-[width] duration-500"
-          style={{ width: `calc((100% - 1rem) * ${pct})` }}
-        />
-        <span className="absolute top-1/2 right-0 size-2.5 -translate-y-1/2 rounded-full border border-brass" />
-        <span
-          className="absolute top-1/2 -translate-y-1/2 transition-[left] duration-500"
-          style={{ left: `clamp(0px, calc(${pct * 100}% - 1.375rem), calc(100% - 2.75rem))` }}
-        >
-          <span
-            className={`grid size-11 place-items-center rounded-xl border border-brass bg-ink text-brass shadow-[0_0_28px_rgba(212,160,84,0.28)] ${
-              done ? "" : "parcel-bob"
-            }`}
-          >
-            <Package className="size-5" aria-hidden="true" />
-          </span>
-        </span>
+      {fileName ? <p className="truncate text-center font-display text-3xl tracking-tight text-brass">{fileName}</p> : null}
+      {finished ? (
+        <>
+          <div className="mt-8 flex justify-center text-brass">
+            {sent === 0 ? (
+              <PackageX className="size-16 text-bad" aria-hidden="true" />
+            ) : (
+              <PackageCheck className="size-16" aria-hidden="true" />
+            )}
+          </div>
+          {sent === 0 ? <p className="mt-5 text-center font-display text-3xl tracking-tight">Not delivered</p> : null}
+          <p className="mt-2 text-center text-sm text-mist">{failed > 0 ? failureLine : `${progress.completed} of ${progress.total}`}</p>
+        </>
+      ) : (
+        <>
+          <div className="relative mx-auto mt-10 h-16 max-w-sm">
+            <div className="absolute top-1/2 right-2 left-2 h-px -translate-y-1/2 bg-line" />
+            <div
+              className="absolute top-1/2 left-2 h-px -translate-y-1/2 bg-brass transition-[width] duration-500"
+              style={{ width: `calc((100% - 1rem) * ${pct})` }}
+            />
+            <span className="absolute top-1/2 right-0 size-2.5 -translate-y-1/2 rounded-full border border-brass" />
+            <span
+              className="absolute top-1/2 -translate-y-1/2 transition-[left] duration-500"
+              style={{ left: `clamp(0px, calc(${pct * 100}% - 1.375rem), calc(100% - 2.75rem))` }}
+            >
+              <span className="parcel-bob grid size-11 place-items-center rounded-xl border border-brass bg-ink text-brass shadow-[0_0_28px_rgba(212,160,84,0.28)]">
+                <Package className="size-5" aria-hidden="true" />
+              </span>
+            </span>
+          </div>
+          <p className="mt-8 text-center font-display text-4xl tracking-tight">{remaining} remaining</p>
+          <p className="mt-2 text-center text-sm text-mist">
+            <span>{current ? `On the way to ${current}` : "Packing"}</span>
+            <Elapsed />
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
+export function ReleaseCard({ note, plain = false }: { note: ReleaseNote; plain?: boolean }) {
+  const [copied, setCopied] = useState(false);
+  const post = releasePost(note);
+
+  async function copy() {
+    if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(post);
+    setCopied(true);
+  }
+
+  const body = (
+    <>
+      <div className={plain ? "px-1 py-2" : "border-b border-brass/30 bg-brass/10 px-5 py-4"}>
+        {plain ? null : <p className="text-[10px] font-medium uppercase tracking-[0.22em] text-brass">Release note</p>}
+        <h3 className="font-display text-3xl tracking-tight text-ivory">{note.name.trim() || "Untitled mod"}</h3>
+        {note.version.trim() ? <p className="mt-1 text-sm text-brass">Version {note.version.trim()}</p> : null}
       </div>
-      <p className="mt-8 text-center font-display text-4xl tracking-tight">
-        {done ? "Delivered" : finished ? "Not delivered" : `${remaining} remaining`}
-      </p>
-      <p className="mt-2 text-center text-sm text-mist">
-        <span>
-          {done
-            ? `${progress.completed} of ${progress.total}`
-            : finished
-              ? `${failed} failed`
-              : current
-                ? `On the way to ${current}`
-                : "Packing"}
-        </span>
-        {done ? null : <span className="text-brass"> {left}%</span>}
-      </p>
+      {note.notes.trim() ? (
+        <p className="whitespace-pre-wrap px-1 py-4 text-sm leading-relaxed text-ivory">{note.notes.trim()}</p>
+      ) : null}
+      {note.links.length > 0 ? (
+        <ul className="border-t border-line">
+          {note.links.map((link) => (
+            <li key={`${link.host}-${link.url}`} className="border-b border-line px-1 py-3 last:border-b-0">
+              <p className="text-sm text-ivory">{link.host}</p>
+              <a href={link.url} target="_blank" rel="noreferrer" className="mt-1 block break-all text-sm text-brass">
+                {link.url}
+              </a>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      <div className="pt-4">
+        <button
+          type="button"
+          onClick={() => void copy()}
+          className="flex min-h-12 w-full items-center justify-center gap-2 rounded-full bg-brass px-5 font-medium text-brass-ink shadow-[0_0_24px_rgba(212,160,84,0.28)]"
+        >
+          {copied ? <Check className="size-4" aria-hidden="true" /> : <Copy className="size-4" aria-hidden="true" />}
+          {copied ? "Copied" : "Copy release note"}
+        </button>
+      </div>
+    </>
+  );
+  if (plain) return <div>{body}</div>;
+  return (
+    <article className="overflow-hidden rounded-card border border-brass/50 bg-panel text-left shadow-[0_0_48px_rgba(212,160,84,0.16)]">
+      {body}
+    </article>
+  );
+}
+
+function FileFolder({
+  tab,
+  note,
+  onTab,
+  children,
+}: {
+  tab: "delivery" | "notes";
+  note: ReleaseNote | null;
+  onTab: (tab: "delivery" | "notes") => void;
+  children: ReactNode;
+}) {
+  return (
+    <div className="overflow-hidden rounded-[28px] border border-brass/40 bg-panel shadow-[0_0_40px_rgba(212,160,84,0.08)]">
+      <div className="flex" role="tablist" aria-label="Delivery folder">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "delivery"}
+          onClick={() => onTab("delivery")}
+          className={`px-6 py-3 font-display text-2xl ${tab === "delivery" ? "bg-panel text-ivory" : "border-b border-brass/40 bg-ink text-mist"}`}
+        >
+          Delivery
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "notes"}
+          onClick={() => onTab("notes")}
+          className={`px-6 py-3 font-display text-2xl ${tab === "notes" ? "bg-panel text-ivory" : "border-b border-brass/40 bg-ink text-mist"}`}
+        >
+          Notes
+        </button>
+        <div className="flex-1 border-b border-brass/40 bg-ink" />
+      </div>
+      <div className="px-5 pt-4 pb-5">
+        {tab === "notes" ? (
+          note ? (
+            <ReleaseCard note={note} plain />
+          ) : (
+            <p className="px-1 py-8 text-center text-sm text-mist">The note is written when delivery finishes.</p>
+          )
+        ) : (
+          children
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Elapsed() {
+  const [seconds, setSeconds] = useState(0);
+  useEffect(() => {
+    const id = window.setInterval(() => setSeconds((value) => value + 1), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  return <span className="text-brass"> {seconds === 0 ? "starting" : `${seconds}s`}</span>;
+}
+
+const RESULT_PILES = [
+  { status: "success", label: "Passed" },
+  { status: "error", label: "Failed" },
+  { status: "skipped", label: "Skipped" },
+] as const;
+
+function ResultPile({ label, results }: { label: string; results: SiteResult[] }) {
+  const [open, setOpen] = useState(false);
+  const over = useRef(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const depth = Math.min(results.length - 1, 3);
+
+  function clearTimer() {
+    if (timer.current == null) return;
+    clearTimeout(timer.current);
+    timer.current = null;
+  }
+
+  function schedule() {
+    clearTimer();
+    timer.current = setTimeout(() => {
+      setOpen(false);
+    }, 5000);
+  }
+
+  useEffect(() => clearTimer, []);
+
+  return (
+    <div
+      onMouseEnter={() => {
+        over.current = true;
+        clearTimer();
+      }}
+      onMouseLeave={() => {
+        over.current = false;
+        if (open) schedule();
+      }}
+    >
+      <p className="mb-2 text-[10px] font-medium uppercase tracking-[0.18em] text-mist">{label}</p>
+      {open ? (
+        <ol className="space-y-2">
+          {results.map((result, index) => (
+            <ResultSlip key={result.id} result={result} index={index} />
+          ))}
+        </ol>
+      ) : (
+        <button
+          type="button"
+          aria-label={`Show ${label}`}
+          onClick={() => setOpen(true)}
+          className="relative block w-full text-left"
+          style={{ height: 112 + depth * 18 }}
+        >
+          {results.slice(0, 4).map((result, index) => {
+            const sent = result.status === "success";
+            const failed = result.status === "error";
+            return (
+              <span
+                key={result.id}
+                className={`absolute inset-x-0 block rounded-2xl border bg-ink px-4 py-3 shadow-[0_12px_32px_rgba(0,0,0,0.4)] ${
+                  sent ? "border-ok/35" : failed ? "border-bad/40" : "border-dashed border-line"
+                }`}
+                style={{ top: index * 18, zIndex: 10 - index }}
+              >
+                <span className="flex items-center gap-3">
+                  <span
+                    className={`grid size-12 shrink-0 place-items-center rounded-xl border ${
+                      sent
+                        ? "border-brass/50 bg-brass/10 text-brass"
+                        : failed
+                          ? "border-bad/40 bg-bad/10 text-bad"
+                          : "border-dashed border-line bg-panel text-mist"
+                    }`}
+                  >
+                    <Package className="size-5" aria-hidden="true" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block font-medium text-ivory">{platformById(result.id).name}</span>
+                    <span className="mt-1 block truncate text-sm text-mist">{result.message}</span>
+                  </span>
+                  <span
+                    className={`shrink-0 -rotate-6 rounded border px-2 py-1 text-[10px] font-medium uppercase tracking-[0.16em] ${
+                      sent ? "border-ok/50 text-ok" : failed ? "border-bad/50 text-bad" : "border-line text-mist"
+                    }`}
+                  >
+                    {sent ? "Sent" : failed ? "Failed" : "Skipped"}
+                  </span>
+                </span>
+              </span>
+            );
+          })}
+        </button>
+      )}
+    </div>
+  );
+}
+
+export function ResultDeck({ results }: { results: SiteResult[] }) {
+  const piles = RESULT_PILES.map((pile) => ({
+    ...pile,
+    items: results.filter((result) => result.status === pile.status),
+  })).filter((pile) => pile.items.length > 0);
+  if (piles.length === 0) return null;
+  return (
+    <div className="space-y-4">
+      {piles.map((pile) => (
+        <ResultPile key={pile.status} label={pile.label} results={pile.items} />
+      ))}
     </div>
   );
 }
@@ -576,6 +824,7 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [naming, setNaming] = useState(false);
+  const [baseId, setBaseId] = useState("");
   const [draftName, setDraftName] = useState("");
   const [nameEdit, setNameEdit] = useState<string | null>(null);
   const [fileSize, setFileSize] = useState<number | null>(null);
@@ -587,6 +836,8 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
   const [results, setResults] = useState<SiteResult[] | null>(null);
   const [progress, setProgress] = useState<PublishProgress | null>(null);
   const [shippedName, setShippedName] = useState("");
+  const [releaseNote, setReleaseNote] = useState<ReleaseNote | null>(null);
+  const [folder, setFolder] = useState<"delivery" | "notes">("delivery");
 
   const active = mods.find((mod) => mod.id === activeId) ?? mods[0];
   const hostConfigs = active?.configs ?? defaultConfigs();
@@ -691,7 +942,9 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
       zip = makeZip(entries, label);
     }
     setShippedName(label);
+    setReleaseNote(null);
     setRunning(true);
+    setFolder("delivery");
     setResults(null);
     setProgress({ completed: 0, total: ready, current: null });
     try {
@@ -704,7 +957,12 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
         transport: selectTransport(transport),
         onProgress: setProgress,
       });
-      setResults(next);
+      const shown = next.map((result) => withCurseForgePage(result, hostConfigs.curseforge.fields.projectId ?? ""));
+      setResults(shown);
+      const links = shown.flatMap((result) =>
+        result.status === "success" && result.url ? [{ host: platformById(result.id).name, url: result.url }] : [],
+      );
+      setReleaseNote(links.length > 0 ? { name: active!.name, version, notes: input.changelog, links } : null);
       if (next.some((result) => result.status === "success")) {
         packageFile.current = null;
         packageFiles.current = [];
@@ -936,11 +1194,32 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
 
         {hostsOpen || vault === "locked" || arming ? null : (
         <section key={active?.id ?? "none"} className="mx-auto w-full min-w-0 max-w-xl space-y-4">
+            {progress ? (
+              <FileFolder tab={folder} note={releaseNote} onTab={setFolder}>
+                <Delivery
+                  fileName={shippedName}
+                  progress={progress}
+                  failures={(results ?? []).filter((result) => result.status === "error").map((result) => platformById(result.id).name)}
+                />
+                {running ? null : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setProgress(null);
+                      setResults(null);
+                      setReleaseNote(null);
+                      setFolder("delivery");
+                    }}
+                    className="mt-2 min-h-11 w-full text-sm text-brass"
+                  >
+                    Back to package
+                  </button>
+                )}
+              </FileFolder>
+            ) : (
             <div className="rounded-card border border-line bg-panel p-4 sm:p-5">
               <div className="mb-4 flex items-center gap-3">
-                {progress ? (
-                  <h2 className="min-w-0 flex-1 font-display text-2xl">Delivery</h2>
-                ) : active ? (
+                {active ? (
                   <input
                     aria-label="Mod name"
                     value={nameEdit ?? active.name}
@@ -955,28 +1234,11 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
                 ) : (
                   <h2 className="min-w-0 flex-1 font-display text-2xl">Mods</h2>
                 )}
-                {progress ? <Package className="size-5 shrink-0 text-brass" aria-hidden="true" /> : null}
               </div>
               {active && nameEdit !== null && nameTaken(mods, nameEdit, active.id) ? (
                 <p className="-mt-2 mb-3 text-sm text-bad">Already used</p>
               ) : null}
-              {progress ? (
-                <>
-                  <Delivery fileName={shippedName} progress={progress} />
-                  {running ? null : (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setProgress(null);
-                        setResults(null);
-                      }}
-                      className="mt-2 min-h-11 w-full text-sm text-brass"
-                    >
-                      Back to package
-                    </button>
-                  )}
-                </>
-              ) : libraryOpen || !active ? (
+              {libraryOpen || !active ? (
                 <div className="space-y-3">
                   {mods.length > 20 ? (
                     <input
@@ -1009,6 +1271,18 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
                         </button>
                         <button
                           type="button"
+                          aria-label={`Duplicate ${mod.name}`}
+                          onClick={() => {
+                            setNaming(true);
+                            setBaseId(mod.id);
+                            setDraftName("");
+                          }}
+                          className="shrink-0 px-1 text-sm text-brass hover:text-ivory"
+                        >
+                          Duplicate
+                        </button>
+                        <button
+                          type="button"
                           aria-label={`Remove ${mod.name}`}
                           onClick={() => {
                             const next = mods.filter((item) => item.id !== mod.id);
@@ -1016,7 +1290,7 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
                             if (mod.id === active?.id) setActiveId(next[0]?.id ?? "");
                             if (next.length === 0) setLibraryOpen(true);
                           }}
-                          className="min-h-11 px-2 text-sm text-mist hover:text-ivory"
+                          className="shrink-0 px-1 text-sm text-mist hover:text-ivory"
                         >
                           Remove
                         </button>
@@ -1032,10 +1306,13 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
                         const name = draftName.trim();
                         if (!name || nameTaken(mods, name)) return;
                         const mod = createMod(name);
+                        const source = mods.find((item) => item.id === baseId);
+                        if (source) mod.configs = normalizeConfigs(source.configs);
                         setMods((list) => [...list, mod]);
                         setActiveId(mod.id);
                         setQuery("");
                         setDraftName("");
+                        setBaseId("");
                         setNaming(false);
                         setLibraryOpen(false);
                         setFileSize(null);
@@ -1053,6 +1330,24 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
                       {draftName.trim() && nameTaken(mods, draftName) ? (
                         <p className="text-sm text-bad">Already used</p>
                       ) : null}
+                      {mods.length > 0 ? (
+                        <label className="block">
+                          <span className="mb-1.5 block text-sm text-mist">Base on</span>
+                          <select
+                            aria-label="Base on"
+                            value={baseId}
+                            onChange={(event) => setBaseId(event.target.value)}
+                            className="h-11 w-full rounded-xl border border-line bg-ink px-3 text-ivory outline-none focus:border-brass"
+                          >
+                            <option value="">New keys</option>
+                            {mods.map((mod) => (
+                              <option key={mod.id} value={mod.id}>
+                                {mod.name}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      ) : null}
                       <div className="flex items-center gap-3">
                         <button
                           type="submit"
@@ -1066,6 +1361,7 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
                           onClick={() => {
                             setNaming(false);
                             setDraftName("");
+                            setBaseId("");
                           }}
                           className="min-h-11 px-2 text-sm text-mist"
                         >
@@ -1079,6 +1375,7 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
                       onClick={() => {
                         setNaming(true);
                         setDraftName("");
+                        setBaseId("");
                       }}
                       className="min-h-11 text-sm text-brass"
                     >
@@ -1173,13 +1470,8 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
               </>
               )}
             </div>
-            {results ? (
-              <ol className="space-y-2">
-                {results.map((result, index) => (
-                  <ResultSlip key={result.id} result={result} index={index} />
-                ))}
-              </ol>
-            ) : null}
+            )}
+            {results ? <ResultDeck results={results} /> : null}
           </section>
         )}
         {vault === "off" ? (

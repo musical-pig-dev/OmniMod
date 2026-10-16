@@ -9,7 +9,6 @@
     "build:chrome": "vite build --config vite.chrome.config.ts",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "preview": "vite preview  --config vite.chrome.config.ts",
     "lint": "eslint ."
   },
   "dependencies": {
@@ -22,6 +21,7 @@
   "devDependencies": {
     "@eslint/js": "^9.39.5",
     "@tailwindcss/vite": "^4.0.0",
+    "@testing-library/dom": "^10.4.2",
     "@testing-library/react": "^16.0.0",
     "@testing-library/user-event": "^14.5.0",
     "@types/react": "^19.0.0",

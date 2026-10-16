@@ -1,9 +1,9 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SiteResult, Transport } from "@/lib/omnimod/publish";
 import { ticketTitle } from "@/lib/omnimod/publish";
-import { Delivery, ResultSlip, SiteCard, Studio } from "./studio";
+import { Delivery, ReleaseCard, ResultDeck, ResultSlip, SiteCard, Studio } from "./studio";
 import { platformById } from "@/lib/omnimod/catalog";
 import { emptyConfig } from "@/lib/omnimod/catalog";
 import { createMod } from "@/lib/omnimod/mods";
@@ -83,7 +83,7 @@ describe("Studio", () => {
     await user.type(version, "1.4.2");
     await user.type(screen.getByRole("textbox", { name: "Changelog *" }), "Softer glass.");
     await user.click(screen.getByRole("button", { name: "Publish to 1 host" }));
-    expect(screen.getByText("Delivered")).toBeTruthy();
+    expect(screen.getByText("1 of 1")).toBeTruthy();
     expect(screen.getByText("Sent")).toBeTruthy();
     await user.click(screen.getByRole("button", { name: /Hosts/ }));
     expect(screen.getByText(/1 sent/)).toBeTruthy();
@@ -121,7 +121,7 @@ describe("Studio", () => {
     await user.type(refused, "0.0.0");
     await user.type(screen.getByRole("textbox", { name: "Changelog *" }), "nope");
     await user.click(screen.getByRole("button", { name: /Publish to/ }));
-    expect(screen.getByText("Failed")).toBeTruthy();
+    expect(screen.getAllByText("Failed").length).toBeGreaterThan(0);
     await user.click(screen.getByRole("button", { name: /Hosts/ }));
     expect(screen.getByText(/1 failed/)).toBeTruthy();
     await user.click(screen.getByRole("button", { name: /Hosts/ }));
@@ -163,6 +163,51 @@ describe("Studio", () => {
     await user.click(screen.getByRole("button", { name: "Remove Lanterns" }));
     expect(screen.getByRole("button", { name: "Remove Clock" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Remove Lanterns" })).toBeNull();
+  });
+
+  it("copies host keys into a duplicated mod", async () => {
+    const user = userEvent.setup();
+    render(<Studio transport={ok} />);
+    await addMod(user, "Lanterns");
+    await user.click(screen.getByRole("button", { name: /Hosts/ }));
+    await user.click(screen.getByRole("button", { name: /Nexus Mods/ }));
+    await typeField(user, "API key", "secret");
+    await user.click(screen.getByRole("button", { name: /Hosts/ }));
+    await user.click(screen.getByRole("button", { name: "1" }));
+    await user.click(screen.getByRole("button", { name: "Duplicate Lanterns" }));
+    expect((screen.getByLabelText("Base on") as HTMLSelectElement).selectedOptions[0]?.textContent).toBe("Lanterns");
+    await user.selectOptions(screen.getByLabelText("Base on"), "");
+    expect((screen.getByLabelText("Base on") as HTMLSelectElement).value).toBe("");
+    await user.selectOptions(screen.getByLabelText("Base on"), (screen.getByLabelText("Base on") as HTMLSelectElement).options[1].value);
+    await user.type(screen.getByRole("textbox", { name: "New mod name" }), "Clock");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    await user.click(screen.getByRole("button", { name: /Hosts/ }));
+    expect((screen.getByLabelText("API key") as HTMLInputElement).value).toBe("secret");
+  });
+
+  it("replaces a CurseForge download link with the project files page", async () => {
+    const user = userEvent.setup();
+    const transport: Transport = async () => ({ ok: true, url: "https://edge.forgecdn.net/files/9203/349/test-mod.zip" });
+    render(<Studio transport={transport} />);
+    await addMod(user, "Lanterns");
+    await user.click(screen.getByRole("button", { name: /Hosts/ }));
+    await user.click(screen.getByRole("button", { name: /CurseForge/ }));
+    await typeField(user, "Project ID", "1744552");
+    await typeField(user, "Game versions", "26.2");
+    await user.click(screen.getByRole("button", { name: /Hosts/ }));
+    await user.upload(document.querySelector('input[type="file"]') as HTMLInputElement, zip("test-mod.zip"));
+    const version = screen.getByRole("textbox", { name: "Version *" });
+    await user.clear(version);
+    await user.type(version, "0.0.3");
+    await user.type(screen.getByRole("textbox", { name: "Changelog *" }), "test");
+    await user.click(screen.getByRole("button", { name: /Publish to/ }));
+    expect(screen.getByRole("tab", { name: "Delivery" }).getAttribute("aria-selected")).toBe("true");
+    await user.click(screen.getByRole("tab", { name: "Notes" }));
+    expect(screen.getByRole("link", { name: "https://authors.curseforge.com/#/projects/1744552/files" }).getAttribute("href")).toBe(
+      "https://authors.curseforge.com/#/projects/1744552/files",
+    );
+    await user.click(screen.getByRole("tab", { name: "Delivery" }));
+    expect(screen.getByText("1 of 1")).toBeTruthy();
   });
 
   it("hides mod search until there are more than 20 mods", async () => {
@@ -234,20 +279,85 @@ describe("Studio", () => {
     );
     expect(screen.getByText("2 remaining")).toBeTruthy();
     expect(screen.getByText("Packing")).toBeTruthy();
-    expect(screen.getByText("100%")).toBeTruthy();
+    expect(screen.getByText("starting")).toBeTruthy();
     rerender(<Delivery fileName="pack.zip" progress={{ completed: 1, total: 2, current: "nexus" }} />);
     expect(screen.getByText("On the way to Nexus Mods")).toBeTruthy();
-    expect(screen.getByText("50%")).toBeTruthy();
+    expect(screen.getByText("starting")).toBeTruthy();
     rerender(<Delivery fileName="pack.zip" progress={{ completed: 2, total: 2, current: null }} />);
-    expect(screen.getByText("Delivered")).toBeTruthy();
     expect(screen.getByText("2 of 2")).toBeTruthy();
-    expect(screen.queryByText("0%")).toBeNull();
+    expect(screen.queryByText("Delivered")).toBeNull();
+    expect(screen.getByText("pack.zip")).toBeTruthy();
     rerender(<Delivery fileName="pack.zip" progress={{ completed: 1, total: 1, current: null, failed: 1 }} />);
     expect(screen.getByText("Not delivered")).toBeTruthy();
     expect(screen.getByText("1 failed")).toBeTruthy();
     rerender(<Delivery fileName="" progress={{ completed: 0, total: 0, current: null }} />);
     expect(screen.getByText("0 remaining")).toBeTruthy();
-    expect(screen.getByText("0%")).toBeTruthy();
+    expect(screen.getByText("starting")).toBeTruthy();
+  });
+
+  it("counts the seconds while a delivery is still moving", () => {
+    let tick: (() => void) | undefined;
+    const originalInterval = window.setInterval;
+    const originalClear = window.clearInterval;
+    window.setInterval = ((fn: () => void) => {
+      tick = fn;
+      return 1;
+    }) as typeof window.setInterval;
+    window.clearInterval = (() => undefined) as typeof window.clearInterval;
+    try {
+      const view = render(<Delivery fileName="pack.zip" progress={{ completed: 0, total: 1, current: null }} />);
+      expect(screen.getByText("starting")).toBeTruthy();
+      act(() => {
+        tick?.();
+      });
+      expect(screen.getByText("1s")).toBeTruthy();
+      view.unmount();
+    } finally {
+      window.setInterval = originalInterval;
+      window.clearInterval = originalClear;
+    }
+  });
+
+  it("copies a release note and names a failed host", async () => {
+    const user = userEvent.setup();
+    const write = vi.fn().mockResolvedValue(undefined);
+    const clip = navigator.clipboard;
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: write } });
+    render(
+      <>
+        <Delivery
+          fileName="test-mod.zip"
+          progress={{ completed: 2, total: 2, current: null, failed: 1 }}
+          failures={["Nexus Mods"]}
+        />
+        <ReleaseCard
+          note={{
+            name: "Lanterns",
+            version: "0.0.2",
+            notes: "Softer glass.",
+            links: [{ host: "CurseForge", url: "https://authors.curseforge.com/#/projects/1744552/files" }],
+          }}
+        />
+      </>,
+    );
+    expect(screen.getByText("Nexus Mods failed")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Lanterns" })).toBeTruthy();
+    expect(screen.getByText("Version 0.0.2")).toBeTruthy();
+    expect(screen.getByText("Softer glass.")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Copy release note" }));
+    expect(write).toHaveBeenCalledWith(
+      "Lanterns\n\nVersion 0.0.2\n\nSofter glass.\n\nCurseForge\nhttps://authors.curseforge.com/#/projects/1744552/files",
+    );
+    expect(screen.getByRole("button", { name: "Copied" })).toBeTruthy();
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: clip });
+    cleanup();
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+    render(<ReleaseCard note={{ name: " ", version: " ", notes: " ", links: [] }} />);
+    expect(screen.getByRole("heading", { name: "Untitled mod" })).toBeTruthy();
+    expect(screen.queryByText(/Version/)).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Copy release note" }));
+    expect(screen.getByRole("button", { name: "Copied" })).toBeTruthy();
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: clip });
   });
 
   it("walks the host editor, library switch, and blocked publish labels", async () => {
@@ -315,6 +425,9 @@ describe("Studio", () => {
     await user.click(publish);
     expect(screen.queryByRole("button", { name: "Back to package" })).toBeNull();
     expect(screen.getByText(/remaining/)).toBeTruthy();
+    await user.click(screen.getByRole("tab", { name: "Notes" }));
+    expect(screen.getByText("The note is written when delivery finishes.")).toBeTruthy();
+    await user.click(screen.getByRole("tab", { name: "Delivery" }));
     release({ ok: true });
     expect(await screen.findByText("On the way to GitHub Releases")).toBeTruthy();
     release({ ok: true });
@@ -377,7 +490,7 @@ describe("Studio", () => {
     expect(screen.getByText("Bot")).toBeTruthy();
     expect(screen.getByRole("link", { name: "Open CurseForge" }).getAttribute("href")).toBe("https://www.curseforge.com/");
     expect(screen.getByRole("combobox", { name: "Release type" }).textContent).toContain("Beta");
-    expect(screen.getByRole("combobox", { name: "Publish when" }).textContent).toContain("When it is approved");
+    expect(screen.getByRole("combobox", { name: "Release options" }).textContent).toContain("Publish this file automatically once approved");
     const release = screen.getByRole("combobox", { name: "Release type" });
     await user.click(release);
     await user.click(release);
@@ -409,6 +522,69 @@ describe("Studio", () => {
       <ResultSlip result={{ id: "curseforge", status: "error", message: "no", url: "https://example.com" }} index={0} />,
     );
     expect(screen.queryByRole("link", { name: "View upload" })).toBeNull();
+  });
+
+  it("stacks results until they are opened", async () => {
+    const user = userEvent.setup();
+    render(
+      <ResultDeck
+        results={[
+          { id: "nexus", status: "skipped", message: "Nexus Mods needs account details. Left alone." },
+          { id: "curseforge", status: "success", message: "CurseForge accepted 0.0.2.", url: "https://authors.curseforge.com/#/projects/1744552/files" },
+        ]}
+      />,
+    );
+    expect(screen.queryByRole("link", { name: "View upload" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Show Passed" }));
+    expect(screen.getByRole("link", { name: "View upload" }).getAttribute("href")).toBe(
+      "https://authors.curseforge.com/#/projects/1744552/files",
+    );
+  });
+
+  it("folds a result pile after the pointer leaves and ignores an empty deck", () => {
+    const pending = new Map<number, () => void>();
+    let nextId = 1;
+    const originalTimeout = window.setTimeout;
+    const originalClear = window.clearTimeout;
+    window.setTimeout = ((fn: () => void) => {
+      const id = nextId;
+      nextId += 1;
+      pending.set(id, fn);
+      return id;
+    }) as typeof window.setTimeout;
+    window.clearTimeout = ((id: number) => {
+      pending.delete(id);
+    }) as typeof window.clearTimeout;
+    try {
+      const empty = render(<ResultDeck results={[]} />);
+      expect(empty.container.textContent).toBe("");
+      empty.unmount();
+      render(
+        <ResultDeck
+          results={[
+            { id: "curseforge", status: "success", message: "CurseForge accepted 0.0.2.", url: "https://authors.curseforge.com/#/projects/1744552/files" },
+            { id: "nexus", status: "error", message: "Nexus Mods rejected the upload." },
+            { id: "modrinth", status: "skipped", message: "Modrinth is turned off." },
+          ]}
+        />,
+      );
+      const pile = screen.getByText("Passed").parentElement as HTMLElement;
+      fireEvent.mouseLeave(pile);
+      fireEvent.click(screen.getByRole("button", { name: "Show Passed" }));
+      fireEvent.mouseLeave(pile);
+      const fold = [...pending.values()].at(-1);
+      act(() => {
+        fold?.();
+      });
+      expect(screen.getByRole("button", { name: "Show Passed" })).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Show Passed" }));
+      fireEvent.mouseLeave(pile);
+      fireEvent.mouseEnter(pile);
+      expect(screen.queryByRole("button", { name: "Show Passed" })).toBeNull();
+    } finally {
+      window.setTimeout = originalTimeout;
+      window.clearTimeout = originalClear;
+    }
   });
 
   it("opens a failed host and links the matching ticket", async () => {
@@ -534,8 +710,8 @@ describe("Studio", () => {
     await user.click(screen.getByRole("option", { name: "Beta" }));
     await user.click(screen.getByLabelText("Release type"));
     await user.click(screen.getByRole("option", { name: "Host key" }));
-    await user.click(screen.getByLabelText("Publish when"));
-    await user.click(screen.getByRole("option", { name: "Keep it as a draft" }));
+    await user.click(screen.getByLabelText("Release options"));
+    await user.click(screen.getByRole("option", { name: "I would like to publish this file manually once approved" }));
     await user.click(screen.getByRole("button", { name: "CurseForge", exact: true }));
     expect(screen.queryByText("Empty fields use the host key.")).toBeNull();
     const zone = screen.getByRole("button", { name: /Drop a zip/ });
@@ -544,7 +720,7 @@ describe("Studio", () => {
     fireEvent.drop(screen.getByRole("button", { name: /notes.txt/ }), { dataTransfer: { files: [zip("pack.zip")] } });
     await user.click(screen.getByRole("button", { name: "CurseForge", exact: true }));
     expect(screen.getByLabelText("Display name")).toHaveProperty("value", "Sample");
-    expect(screen.getByLabelText("Publish when").textContent).toContain("Keep it as a draft");
+    expect(screen.getByLabelText("Release options").textContent).toContain("I would like to publish this file manually once approved");
   });
 
   it("names an unknown host and ignores an empty file choice", async () => {
@@ -656,7 +832,7 @@ describe("Studio", () => {
     );
     render(<Studio transport={transport} />);
     await userEvent.click(await screen.findByRole("button", { name: "Publish to 1 host" }));
-    expect(screen.getByText("Delivered")).toBeTruthy();
+    expect(screen.getByText("saved.jar")).toBeTruthy();
     expect(seen).toEqual([null]);
   });
 

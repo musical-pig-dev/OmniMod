@@ -2,7 +2,13 @@
 
 Publish one archive to every host that already has a key.
 
-`npm run dev` rehearses the send. It does not call Nexus, CurseForge, Modrinth, GitHub, or Thunderstore. The installed extension does.
+`npm run dev` rehearses the send. It does not call the hosts. Real uploads happen in the Chrome extension. Build that with one command:
+
+```bash
+npm run extension
+```
+
+That writes `dist/chrome` and `omnimod-chrome.zip`. Open `chrome://extensions`, turn on Developer mode, and choose Load unpacked on `dist/chrome`. Click the OmniMod icon. It opens a tab and sends to the hosts.
 
 ## Install in Chrome
 
@@ -22,15 +28,13 @@ npm install
 npm run dev
 ```
 
-Open the address the dev server prints. That page is the rehearsal.
+Open the address the dev server prints. That page only rehearses.
 
 ```bash
 npm test
 npm run lint
-npm run build:chrome
+npm run extension
 ```
-
-Load `dist/chrome` the same way as the release zip. That build calls the real host APIs.
 
 ## Host keys
 

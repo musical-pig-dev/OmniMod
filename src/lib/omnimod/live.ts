@@ -1,5 +1,6 @@
 import type { PlatformId } from "./catalog.ts";
 import {
+  curseForgeFilesPage,
   curseForgeFormValues,
   fillCurseForgePage,
   type CurseFillResult,
@@ -9,6 +10,8 @@ import {
   type PublishInput,
 } from "./publish.ts";
 import { studioTransport } from "./storage.ts";
+
+export const OMNIMOD_EXTENSION_ID = "bcaflimdmlindhijdekblbebekkbgegn";
 
 const MODRINTH = "https://api.modrinth.com/v2";
 const MODRINTH_AGENT = "OmniMod/0.1";
@@ -380,18 +383,43 @@ async function publishCurseForge(
     stepMs: 50,
   };
   const url = `${CURSEFORGE}/#/projects/${encodeURIComponent(projectId)}/files/create`;
+  if (curse.fromExtension && typeof chromeApi()?.scripting?.executeScript !== "function") {
+    return askInstalledExtension(url, fill);
+  }
   let tabId: number | null = null;
   try {
     tabId = await curse.open(url);
-  } catch {
-    return { ok: false, message: "CurseForge could not open the form tab." };
+  } catch (error) {
+    const detail = error instanceof Error && error.message ? error.message : "The tab could not be opened.";
+    return {
+      ok: false,
+      message: `CurseForge could not open the form tab. ${detail}`,
+      step: "tab",
+      reason: detail,
+      logs: [detail],
+    };
   }
-  if (tabId == null) return { ok: false, message: "CurseForge could not open the form tab." };
+  if (tabId == null) {
+    return {
+      ok: false,
+      message: "CurseForge could not open the form tab.",
+      step: "tab",
+      reason: "no tab id",
+      logs: ["tabs.create returned no tab"],
+    };
+  }
   let result: CurseFillResult;
   try {
     result = await curse.run(tabId, fill);
-  } catch {
-    return { ok: false, message: "CurseForge form could not be filled. The tab was left open." };
+  } catch (error) {
+    const detail = error instanceof Error && error.message ? error.message : "The form script threw.";
+    return {
+      ok: false,
+      message: `CurseForge form could not be filled. ${detail} The tab was left open.`,
+      step: "scripting",
+      reason: detail,
+      logs: ["opened the form tab", `exception: ${detail}`],
+    };
   }
   if (!result.ok) {
     return {
@@ -400,10 +428,11 @@ async function publishCurseForge(
       ...(result.step ? { step: result.step } : {}),
       ...(result.reason ? { reason: result.reason } : {}),
       ...(result.filled && result.filled.length > 0 ? { filled: result.filled } : {}),
+      logs: ["opened the form tab", ...(result.logs ?? [])],
     };
   }
-  const view = result.url.trim();
-  if (!view) return { ok: false, message: "CurseForge did not show the uploaded file. The tab was left open." };
+  const view = curseForgeFilesPage(projectId);
+  if (!view || !result.url.trim()) return { ok: false, message: "CurseForge did not show the uploaded file. The tab was left open." };
   try {
     await curse.close(tabId);
   } catch {
@@ -412,11 +441,17 @@ async function publishCurseForge(
   return { ok: true, url: view };
 }
 
-type ChromeTab = { id?: number; status?: string };
+type ChromeTab = { id?: number; status?: string; url?: string };
 
 type ChromeApi = {
+  runtime?: {
+    lastError?: { message?: string };
+    sendMessage?: (message: { type: string; url: string }) => Promise<{ id?: number | null; error?: string }>;
+  };
   tabs?: {
     create?: (opts: { url: string; active: boolean }) => Promise<ChromeTab>;
+    query?: (opts: { url: string }) => Promise<ChromeTab[]>;
+    update?: (id: number, opts: { url: string; active: boolean }) => Promise<ChromeTab>;
     get?: (id: number) => Promise<ChromeTab>;
     remove?: (id: number) => Promise<void>;
   };
@@ -430,6 +465,7 @@ type ChromeApi = {
 };
 
 export type CurseTabDriver = {
+  fromExtension?: boolean;
   open(url: string): Promise<number | null>;
   run(tabId: number, fill: CurseFormFill): Promise<CurseFillResult>;
   close(tabId: number): Promise<void>;
@@ -454,26 +490,126 @@ async function waitUntilReady(api: ChromeApi, id: number): Promise<void> {
   }
 }
 
+function askInstalledExtension(url: string, fill: CurseFormFill): Promise<TransportResult> {
+  const runtime = (globalThis as {
+    chrome?: { runtime?: { sendMessage?: (...args: unknown[]) => void; lastError?: { message?: string } } };
+  }).chrome?.runtime;
+  if (typeof runtime?.sendMessage !== "function") {
+    return Promise.resolve({
+      ok: false,
+      message: "npm run dev cannot open a Chrome tab. Load the unpacked OmniMod extension, then publish again from this page.",
+      step: "tab",
+      reason: "no extension",
+      logs: ["npm run dev has no chrome.tabs"],
+    });
+  }
+  return new Promise((resolve) => {
+    runtime.sendMessage!(OMNIMOD_EXTENSION_ID, { type: "omnimod-curse-fill", url, fill }, (reply: CurseFillResult | undefined) => {
+      const reason = runtime.lastError?.message;
+      if (reason) {
+        resolve({
+          ok: false,
+          message: `CurseForge could not open the form tab. ${reason}`,
+          step: "tab",
+          reason,
+          logs: [reason],
+        });
+        return;
+      }
+      if (!reply || typeof reply.ok !== "boolean") {
+        resolve({
+          ok: false,
+          message: "CurseForge could not open the form tab.",
+          step: "tab",
+          reason: "no reply",
+          logs: ["extension returned nothing"],
+        });
+        return;
+      }
+      if (!reply.ok) {
+        resolve({
+          ok: false,
+          message: reply.message,
+          ...(reply.step ? { step: reply.step } : {}),
+          ...(reply.reason ? { reason: reply.reason } : {}),
+          ...(reply.filled && reply.filled.length > 0 ? { filled: reply.filled } : {}),
+          logs: reply.logs,
+        });
+        return;
+      }
+      const view = reply.url.trim();
+      if (!view) {
+        resolve({ ok: false, message: "CurseForge did not show the uploaded file. The tab was left open." });
+        return;
+      }
+      const project = decodeURIComponent(url.split("/projects/")[1].split("/")[0]);
+      resolve({ ok: true, url: `https://authors.curseforge.com/#/projects/${project}/files` });
+    });
+  });
+}
+
+async function shownTab(api: ChromeApi, url: string): Promise<number | null> {
+  const tabs = api.tabs;
+  const existing = typeof tabs?.query === "function" ? await tabs.query({ url: "https://authors.curseforge.com/*" }) : [];
+  const reuse = existing.find((tab) => tab.id != null);
+  if (reuse?.id != null && typeof tabs?.update === "function") {
+    await tabs.update(reuse.id, { url, active: false });
+    await waitUntilReady(api, reuse.id);
+    return reuse.id;
+  }
+  if (typeof tabs?.create !== "function") return null;
+  const tab = await tabs.create({ url, active: false });
+  if (tab?.id == null) return null;
+  await waitUntilReady(api, tab.id);
+  return tab.id;
+}
+
+async function openFromBackground(url: string): Promise<number | null> {
+  const send = chromeApi()?.runtime?.sendMessage;
+  if (typeof send !== "function") return null;
+  const reply = await send({ type: "omnimod-open-tab", url });
+  if (reply?.error) throw new Error(reply.error);
+  return reply?.id ?? null;
+}
+
 export function chromeCurseDriver(): CurseTabDriver {
   return {
+    fromExtension: true,
     async open(url) {
       const api = chromeApi();
-      const create = api?.tabs?.create;
-      if (typeof create !== "function") return null;
-      const tab = await create({ url, active: false });
-      if (tab?.id == null) return null;
-      await waitUntilReady(api!, tab.id);
-      return tab.id;
+      if (api) {
+        try {
+          const id = await shownTab(api, url);
+          if (id != null) return id;
+        } catch (error) {
+          const id = await openFromBackground(url);
+          if (id != null) return id;
+          throw error;
+        }
+      }
+      return openFromBackground(url);
     },
     async run(tabId, fill) {
       const execute = chromeApi()?.scripting?.executeScript;
       if (typeof execute !== "function") {
-        return { ok: false, message: "CurseForge form could not be filled. The tab was left open." };
+        return {
+          ok: false,
+          message: "CurseForge form could not be filled. The tab was left open.",
+          step: "scripting",
+          reason: "scripting is not available",
+          logs: ["scripting.executeScript is missing"],
+        };
       }
       const packed = await execute({ target: { tabId }, func: fillCurseForgePage, args: [fill] });
       const result = packed?.[0]?.result;
       if (!result || typeof result.ok !== "boolean") {
-        return { ok: false, message: "CurseForge form could not be filled. The tab was left open." };
+        return {
+          ok: false,
+          message: "CurseForge form could not be filled. The tab was left open.",
+          step: "scripting",
+          reason: "the form script returned nothing",
+          logs: ["scripting.executeScript returned no result"],
+        };
       }
       return result;
     },

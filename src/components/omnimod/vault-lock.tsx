@@ -39,8 +39,20 @@ export function ProtectKeys({
         </button>
       </div>
       <div className="space-y-6">
-        <label className="flex items-center gap-3 text-sm text-ivory">
-          <input type="checkbox" checked={saved} onChange={(event) => setSaved(event.target.checked)} />
+        <label className="inline-flex min-h-11 cursor-pointer items-center gap-3 text-sm text-ivory">
+          <span className="relative grid size-5 shrink-0 place-items-center">
+            <input
+              type="checkbox"
+              checked={saved}
+              onChange={(event) => setSaved(event.target.checked)}
+              className="peer size-5 appearance-none rounded-md border border-brass/80 bg-ink outline-none checked:border-brass checked:bg-brass focus-visible:ring-2 focus-visible:ring-brass focus-visible:ring-offset-2 focus-visible:ring-offset-ink"
+            />
+            <Check
+              className="pointer-events-none absolute size-3.5 text-brass-ink opacity-0 peer-checked:opacity-100"
+              strokeWidth={3}
+              aria-hidden="true"
+            />
+          </span>
           I saved this recovery key
         </label>
         <div className="flex items-center gap-3">

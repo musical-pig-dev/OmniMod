@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import { liveHost, liveTransport, selectTransport, sleep, chromeCurseDriver } from "./live.ts";
+import { OMNIMOD_EXTENSION_ID, liveHost, liveTransport, selectTransport, sleep, chromeCurseDriver } from "./live.ts";
 import type { CurseFormFill, PublishInput, Transport } from "./publish.ts";
 
 const file = new Blob([new Uint8Array([1, 2, 3])], { type: "application/zip" });
@@ -530,7 +530,7 @@ describe("curseforge form tab", () => {
         { override: { displayName: "Sample", gameVersions: "26.3" } },
       ),
     );
-    assert.equal(sent.ok && sent.url, "https://authors.curseforge.com/#/projects/1744552/files/9");
+    assert.equal(sent.ok && sent.url, "https://authors.curseforge.com/#/projects/1744552/files");
     assert.equal(form.opened[0], "https://authors.curseforge.com/#/projects/1744552/files/create");
     assert.deepEqual(form.closed, [4]);
 
@@ -559,7 +559,7 @@ describe("curseforge form tab", () => {
       "curseforge",
       input({ projectId: "1744552", gameVersions: "26.3" }),
     );
-    assert.equal(kept.ok && kept.url, "https://authors.curseforge.com/#/projects/1744552/files/9");
+    assert.equal(kept.ok && kept.url, "https://authors.curseforge.com/#/projects/1744552/files");
 
     const noTab = driver({ open: async () => null });
     assert.match(
@@ -587,22 +587,39 @@ describe("curseforge form tab", () => {
         : "could not open",
       /could not open/,
     );
+    const unnamedOpen = driver({
+      open: async () => {
+        throw "nope";
+      },
+    });
+    const unnamedTab = await liveTransport(async () => jsonResponse({}), quiet, unnamedOpen.tabs)(
+      "curseforge",
+      input({ projectId: "1744552", gameVersions: "26.3" }),
+    );
+    assert.equal(unnamedTab.ok ? "" : unnamedTab.reason, "The tab could not be opened.");
     const fillThrow = driver({
       run: async () => {
         throw new Error("script");
       },
     });
-    assert.match(
-      (
-        await liveTransport(async () => jsonResponse({}), quiet, fillThrow.tabs)(
-          "curseforge",
-          input({ projectId: "1744552", gameVersions: "26.3" }),
-        )
-      ).ok
-        ? ""
-        : "left open",
-      /left open/,
+    const scripted = await liveTransport(async () => jsonResponse({}), quiet, fillThrow.tabs)(
+      "curseforge",
+      input({ projectId: "1744552", gameVersions: "26.3" }),
     );
+    assert.match(scripted.ok ? "" : scripted.message, /script/);
+    assert.match(scripted.ok ? "" : scripted.message, /left open/);
+    assert.equal(scripted.ok ? "" : scripted.step, "scripting");
+    assert.deepEqual(scripted.ok ? [] : scripted.logs, ["opened the form tab", "exception: script"]);
+    const fillThrowBare = driver({
+      run: async () => {
+        throw "script";
+      },
+    });
+    const unnamed = await liveTransport(async () => jsonResponse({}), quiet, fillThrowBare.tabs)(
+      "curseforge",
+      input({ projectId: "1744552", gameVersions: "26.3" }),
+    );
+    assert.equal(unnamed.ok ? "" : unnamed.reason, "The form script threw.");
     assert.deepEqual(base.versions, ["26.3"]);
   });
 
@@ -632,7 +649,7 @@ describe("curseforge form tab", () => {
     (globalThis as { chrome?: unknown }).chrome = chrome;
     const transport = liveTransport(async () => jsonResponse({}), quiet);
     const sent = await transport("curseforge", input({ projectId: "1744552", gameVersions: "26.3" }));
-    assert.equal(sent.ok && sent.url, "https://www.curseforge.com/projects/simple/files/3");
+    assert.equal(sent.ok && sent.url, "https://authors.curseforge.com/#/projects/1744552/files");
     assert.equal(calls[0]?.active, false);
     assert.match(calls[0]?.url ?? "", /1744552\/files\/create/);
     assert.deepEqual(removed, [8]);
@@ -641,6 +658,7 @@ describe("curseforge form tab", () => {
     const failed = await transport("curseforge", input({ projectId: "1744552", gameVersions: "26.3" }));
     assert.match(failed.ok ? "" : failed.message, /did not load/);
     assert.equal(failed.ok ? "" : failed.step, undefined);
+    assert.deepEqual(failed.ok ? [] : failed.logs, ["opened the form tab"]);
 
     chrome.scripting.executeScript = async () => [
       {
@@ -650,6 +668,7 @@ describe("curseforge form tab", () => {
           step: "changelog",
           reason: "both editors stayed empty",
           filled: ["file"],
+          logs: ["file placed"],
         },
       },
     ];
@@ -659,11 +678,15 @@ describe("curseforge form tab", () => {
       assert.equal(detailed.step, "changelog");
       assert.equal(detailed.reason, "both editors stayed empty");
       assert.deepEqual(detailed.filled, ["file"]);
+      assert.deepEqual(detailed.logs, ["opened the form tab", "file placed"]);
     }
-    chrome.scripting.executeScript = async () => [{ result: { ok: false, message: "CurseForge form could not be filled. The tab was left open.", filled: [] } }];
+    chrome.scripting.executeScript = async () => [{ result: { ok: false, message: "CurseForge form could not be filled. The tab was left open.", filled: [], logs: [] } }];
     const emptyFilled = await transport("curseforge", input({ projectId: "1744552", gameVersions: "26.3" }));
     assert.equal(emptyFilled.ok, false);
-    if (!emptyFilled.ok) assert.equal(emptyFilled.filled, undefined);
+    if (!emptyFilled.ok) {
+      assert.equal(emptyFilled.filled, undefined);
+      assert.deepEqual(emptyFilled.logs, ["opened the form tab"]);
+    }
 
     chrome.scripting.executeScript = async () => [{}];
     assert.match(
@@ -718,6 +741,179 @@ describe("curseforge form tab", () => {
     assert.equal(spins, 3);
     assert.match((await bare.run(5, base)).message ?? "", /could not be filled/);
     await assert.rejects(() => bare.close(5), /no/);
+
+    const updated: Array<{ id: number; url: string; active: boolean }> = [];
+    (globalThis as { chrome?: unknown }).chrome = {
+      tabs: {
+        query: async () => [{ id: 9, url: "https://authors.curseforge.com/#/projects/1" }],
+        update: async (id: number, opts: { url: string; active: boolean }) => {
+          updated.push({ id, ...opts });
+          return { id };
+        },
+        create: async () => {
+          throw new Error("should reuse");
+        },
+      },
+    };
+    assert.equal(await bare.open("https://authors.curseforge.com/#/projects/1/files/create"), 9);
+    assert.equal(updated[0]?.active, false);
+    assert.match(updated[0]?.url ?? "", /files\/create/);
+
+    (globalThis as { chrome?: unknown }).chrome = {
+      tabs: {
+        query: async () => [{ url: "https://authors.curseforge.com/" }],
+        create: async () => ({ id: 11 }),
+      },
+    };
+    assert.equal(await bare.open("https://authors.curseforge.com/#/projects/1/files/create"), 11);
+
+    (globalThis as { chrome?: unknown }).chrome = {
+      tabs: {
+        create: async () => {
+          throw new Error("tabs are blocked");
+        },
+      },
+      runtime: {
+        sendMessage: async () => ({ id: 12 }),
+      },
+    };
+    assert.equal(await bare.open("https://authors.curseforge.com/#/projects/1/files/create"), 12);
+
+    (globalThis as { chrome?: unknown }).chrome = {
+      tabs: {
+        query: async () => [{ id: 3 }],
+        create: async () => ({ id: 4 }),
+      },
+    };
+    assert.equal(await bare.open("https://authors.curseforge.com/#/projects/1/files/create"), 4);
+
+    (globalThis as { chrome?: unknown }).chrome = {
+      tabs: {
+        create: async () => {
+          throw new Error("tabs are blocked");
+        },
+      },
+      runtime: { sendMessage: async () => ({}) },
+    };
+    await assert.rejects(() => bare.open("https://authors.curseforge.com/#/projects/1/files/create"), /tabs are blocked/);
+
+    (globalThis as { chrome?: unknown }).chrome = {
+      runtime: {
+        sendMessage: async () => ({ error: "I cannot open new tab" }),
+      },
+    };
+    await assert.rejects(() => bare.open("https://authors.curseforge.com/#/projects/1/files/create"), /cannot open new tab/);
+
+    (globalThis as { chrome?: unknown }).chrome = {
+      runtime: { sendMessage: async () => ({}) },
+    };
+    assert.equal(await bare.open("https://authors.curseforge.com/#/projects/1/files/create"), null);
+
+    delete (globalThis as { chrome?: unknown }).chrome;
+  });
+
+  it("asks the installed extension to open CurseForge from npm run dev", async () => {
+    delete (globalThis as { chrome?: unknown }).chrome;
+    const missing = await liveTransport(async () => jsonResponse({}), quiet)(
+      "curseforge",
+      input({ projectId: "1744552", gameVersions: "26.3" }),
+    );
+    assert.equal(missing.ok, false);
+    if (!missing.ok) {
+      assert.equal(missing.step, "tab");
+      assert.equal(missing.reason, "no extension");
+      assert.match(missing.message, /npm run dev/);
+    }
+
+    const calls: unknown[][] = [];
+    (globalThis as { chrome?: unknown }).chrome = {
+      runtime: {
+        sendMessage: (...args: unknown[]) => {
+          calls.push(args);
+          const done = args[2] as (reply: unknown) => void;
+          done({ ok: true, url: "https://authors.curseforge.com/#/projects/1744552/files/9" });
+        },
+      },
+    };
+    const sent = await liveTransport(async () => jsonResponse({}), quiet)(
+      "curseforge",
+      input({ projectId: "1744552", gameVersions: "26.3" }),
+    );
+    assert.equal(sent.ok && sent.url, "https://authors.curseforge.com/#/projects/1744552/files");
+    assert.equal(calls[0]?.[0], OMNIMOD_EXTENSION_ID);
+
+    const runtime: { lastError?: { message?: string }; sendMessage: (...args: unknown[]) => void } = {
+      sendMessage: (...args: unknown[]) => {
+        runtime.lastError = { message: "Could not establish connection. Receiving end does not exist." };
+        (args[2] as (reply: unknown) => void)(undefined);
+      },
+    };
+    (globalThis as { chrome?: unknown }).chrome = { runtime };
+    const offline = await liveTransport(async () => jsonResponse({}), quiet)(
+      "curseforge",
+      input({ projectId: "1744552", gameVersions: "26.3" }),
+    );
+    assert.match(offline.ok ? "" : offline.message, /Receiving end does not exist/);
+
+    (globalThis as { chrome?: unknown }).chrome = {
+      runtime: { sendMessage: (_id: string, _message: unknown, done: (reply: unknown) => void) => done(undefined) },
+    };
+    const empty = await liveTransport(async () => jsonResponse({}), quiet)(
+      "curseforge",
+      input({ projectId: "1744552", gameVersions: "26.3" }),
+    );
+    assert.equal(empty.ok ? "" : empty.reason, "no reply");
+
+    (globalThis as { chrome?: unknown }).chrome = {
+      runtime: {
+        sendMessage: (_id: string, _message: unknown, done: (reply: unknown) => void) =>
+          done({ ok: false, message: "CurseForge form did not load. The tab was left open.", step: "form", reason: "form did not load", filled: [], logs: ["opened"] }),
+      },
+    };
+    const failed = await liveTransport(async () => jsonResponse({}), quiet)(
+      "curseforge",
+      input({ projectId: "1744552", gameVersions: "26.3" }),
+    );
+    assert.equal(failed.ok ? "" : failed.step, "form");
+    assert.equal(failed.ok ? "" : failed.filled, undefined);
+
+    (globalThis as { chrome?: unknown }).chrome = {
+      runtime: {
+        sendMessage: (_id: string, _message: unknown, done: (reply: unknown) => void) =>
+          done({ ok: false, message: "stopped", step: "minecraft", reason: "no Minecraft field", filled: ["file"], logs: ["file placed"] }),
+      },
+    };
+    const detailed = await liveTransport(async () => jsonResponse({}), quiet)(
+      "curseforge",
+      input({ projectId: "1744552", gameVersions: "26.3" }),
+    );
+    assert.equal(detailed.ok, false);
+    if (!detailed.ok) assert.deepEqual(detailed.filled, ["file"]);
+
+    (globalThis as { chrome?: unknown }).chrome = {
+      runtime: { sendMessage: (_id: string, _message: unknown, done: (reply: unknown) => void) => done({ ok: true, url: "  " }) },
+    };
+    const blank = await liveTransport(async () => jsonResponse({}), quiet)(
+      "curseforge",
+      input({ projectId: "1744552", gameVersions: "26.3" }),
+    );
+    assert.match(blank.ok ? "" : blank.message, /did not show/);
+
+    (globalThis as { chrome?: unknown }).chrome = {
+      runtime: {
+        sendMessage: (_id: string, _message: unknown, done: (reply: unknown) => void) =>
+          done({ ok: false, message: "stopped", logs: ["opened"] }),
+      },
+    };
+    const plain = await liveTransport(async () => jsonResponse({}), quiet)(
+      "curseforge",
+      input({ projectId: "1744552", gameVersions: "26.3" }),
+    );
+    assert.equal(plain.ok, false);
+    if (!plain.ok) {
+      assert.equal(plain.step, undefined);
+      assert.equal(plain.reason, undefined);
+    }
     delete (globalThis as { chrome?: unknown }).chrome;
   });
 });

@@ -536,6 +536,19 @@ export function resolveCurseVersionIds(
   return { ok: true, ids: uniqueIds(resolved) };
 }
 
+export function curseForgeFilesPage(projectId: string): string | null {
+  const id = projectId.trim();
+  if (!id) return null;
+  return `https://authors.curseforge.com/#/projects/${encodeURIComponent(id)}/files`;
+}
+
+export function withCurseForgePage(result: SiteResult, projectId: string): SiteResult {
+  if (result.id !== "curseforge" || result.status !== "success") return result;
+  const page = curseForgeFilesPage(projectId);
+  if (!page) return result;
+  return { ...result, url: page };
+}
+
 export function curseForgeViewUrl(args: { fileId?: string; slug?: string; projectId?: string }): string | null {
   const fileId = (args.fileId ?? "").trim();
   if (!fileId) return null;
@@ -648,11 +661,16 @@ export async function fillCurseForgePage(fill: CurseFormFill): Promise<CurseFill
 
   function heading(name: string): Element | null {
     const wanted = name.toLowerCase();
-    const node = [...doc.querySelectorAll("label, legend, p, span, h2, h3")].find((item) => {
-      const text = plain(item).toLowerCase();
-      return text === wanted || text.startsWith(`${wanted} `) || text.startsWith(`${wanted}*`);
-    });
-    return node as Element;
+    const hits: Element[] = [];
+    for (const item of doc.querySelectorAll("label, legend, p, span, h1, h2, h3, h4, h5, h6, div, strong, b, small")) {
+      const text = plain(item).toLowerCase().replace(/[*∗✱]/g, "").replace(/\s+/g, " ").trim();
+      if (text.length > 80) continue;
+      if (text === wanted || text.startsWith(`${wanted} `)) hits.push(item);
+    }
+    const titled = hits.find((item) => /field-title|formlabel/i.test(item.getAttribute("class") ?? ""));
+    if (titled) return titled;
+    hits.sort((a, b) => plain(a).length - plain(b).length);
+    return hits[0] ?? null;
   }
 
   function namedText(node: Element): string {
@@ -873,57 +891,116 @@ export async function fillCurseForgePage(fill: CurseFormFill): Promise<CurseFill
   filled.push("release");
   note("release chosen");
 
+  function press(node: Element): void {
+    const view = doc.defaultView ?? window;
+    for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
+      node.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view }));
+    }
+  }
+
+  function chipDelete(chip: Element): Element | null {
+    const nodes = [...chip.querySelectorAll("button, svg, [role='button']")];
+    for (const item of nodes) {
+      const name = `${item.getAttribute("aria-label") ?? ""} ${item.getAttribute("class") ?? ""} ${item.getAttribute("data-testid") ?? ""} ${plain(item)}`;
+      if (/[×x✕]|remove|delete|cancel/i.test(name)) return item;
+    }
+    return chip.querySelector("svg, button");
+  }
+
+  const versionReady = await waitFor(() => heading("Minecraft") != null);
+  const versionSection = heading("Minecraft");
+  if (!versionReady || !versionSection) {
+    return miss("minecraft", "no Minecraft field", "CurseForge form has no Minecraft field. The tab was left open.");
+  }
+  const scope = scopeOf(versionSection);
+  const keep = new Set(fill.versions.map((version) => version.toLowerCase()));
+  const seen = new Set<Element>();
+  for (const node of scope.querySelectorAll("span, div, li")) {
+    if (node.getAttribute("role") === "option") continue;
+    const text = plain(node).toLowerCase().replace(/[×x✕*∗✱]/g, "").replace(/\s+/g, " ").trim();
+    if (!/^[\d]+(?:\.[\d]+)*$/.test(text) || keep.has(text) || plain(node).length > 40) continue;
+    const chip = node.closest(".MuiChip-root, .MuiAutocomplete-tag") ?? node;
+    if (seen.has(chip)) continue;
+    seen.add(chip);
+    const target = chipDelete(chip);
+    if (target) press(target);
+  }
+
   for (const version of fill.versions) {
     note(`minecraft ${version}`);
-    const section = heading("Minecraft") as Element;
+    const ready = await waitFor(() => heading("Minecraft") != null);
+    const section = heading("Minecraft");
+    if (!ready || !section) return miss("minecraft", "no Minecraft field", "CurseForge form has no Minecraft field. The tab was left open.");
     const scope = scopeOf(section);
     const wanted = version.toLowerCase();
     const chip = [...scope.querySelectorAll("span, div, button, li, [data-chip]")].find((node) => {
       if (node.getAttribute("role") === "option") return false;
-      return plain(node).toLowerCase().replace(/[×x✕]/g, "").trim() === wanted;
+      return plain(node).toLowerCase().replace(/[×x✕*∗✱]/g, "").trim() === wanted;
     });
     if (chip) continue;
-    const opener = scope.querySelector("button, [role='combobox']");
-    if (opener instanceof HTMLElement) opener.click();
+    const opener = scope.querySelector("button, [role='combobox'], [aria-haspopup='listbox']");
+    if (opener instanceof HTMLElement) press(opener);
     const field = scope.querySelector("input:not([type='file']):not([type='radio'])");
     if (field instanceof HTMLInputElement) writeControl(field, version);
     let option: Element | undefined;
     await waitFor(() => {
-      option = [...doc.querySelectorAll("[role='option'], li, button")].find((node) => plain(node).toLowerCase() === wanted);
+      option = [...doc.querySelectorAll("[role='option'], li, button")].find((node) => plain(node).toLowerCase().replace(/[×x✕]/g, "").trim() === wanted);
       return option instanceof HTMLElement;
     });
     if (!(option instanceof HTMLElement)) {
       return miss("minecraft", `no Minecraft version ${version}`, `CurseForge has no Minecraft version ${version}. The tab was left open.`);
     }
-    option.click();
+    press(option);
   }
   filled.push("minecraft");
 
-  const releaseLabel = heading("Release Type") as Element;
-  const releaseScope = scopeOf(releaseLabel);
-  const releaseSelect = releaseScope.querySelector("select");
-  if (releaseSelect instanceof HTMLSelectElement) {
-    const option = [...releaseSelect.options].find((item) => plain(item).toLowerCase() === fill.releaseType.toLowerCase());
-    if (!option) return miss("release type", `no release type ${fill.releaseType}`, `CurseForge has no release type ${fill.releaseType}. The tab was left open.`);
-    releaseSelect.value = option.value;
-    releaseSelect.dispatchEvent(new Event("change", { bubbles: true }));
-  } else {
-    const opener = releaseScope.querySelector("[role='combobox'], button");
-    const showing = opener instanceof HTMLElement ? plain(opener).toLowerCase() : "";
-    if (showing !== fill.releaseType.toLowerCase()) {
-      if (opener instanceof HTMLElement) opener.click();
-      let option: Element | undefined;
-      await waitFor(() => {
-        option = [...doc.querySelectorAll("[role='option'], button")].find(
-          (node) => plain(node).toLowerCase() === fill.releaseType.toLowerCase(),
-        );
-        return option instanceof HTMLElement;
-      });
-      if (!(option instanceof HTMLElement)) {
-        return miss("release type", "no release type", "CurseForge form has no release type. The tab was left open.");
+  function releaseControl(label: Element): HTMLElement | null {
+    const inside = label.querySelector("select, [role='combobox'], [aria-haspopup='listbox']");
+    if (inside instanceof HTMLElement) return inside;
+    const following = (node: Element) => (label.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+    const pick = (area: ParentNode): HTMLElement | null => {
+      for (const node of area.querySelectorAll("select, [role='combobox'], [aria-haspopup='listbox'], button")) {
+        if (!(node instanceof HTMLElement) || !following(node) || label.contains(node)) continue;
+        if (node instanceof HTMLSelectElement) return node;
+        if (node.getAttribute("role") === "combobox" || node.getAttribute("aria-haspopup") === "listbox") return node;
+        const text = plain(node).toLowerCase();
+        if (node.tagName === "BUTTON" && (text === "release" || text === "beta" || text === "alpha")) return node;
       }
-      option.click();
+      return null;
+    };
+    let scope: Element | null = label.parentElement;
+    while (scope && scope !== doc.body) {
+      const found = pick(scope);
+      if (found) return found;
+      scope = scope.parentElement;
     }
+    return pick(doc);
+  }
+
+  const releaseLabel = heading("Release Type");
+  if (!releaseLabel) return miss("release type", "no release type", "CurseForge form has no release type. The tab was left open.");
+  const releaseBox = releaseControl(releaseLabel);
+  if (!releaseBox) return miss("release type", "no release type", "CurseForge form has no release type. The tab was left open.");
+  const wantedType = fill.releaseType.toLowerCase();
+  if (releaseBox instanceof HTMLSelectElement) {
+    const option = [...releaseBox.options].find((item) => plain(item).toLowerCase() === wantedType);
+    if (!option) return miss("release type", `no release type ${fill.releaseType}`, `CurseForge has no release type ${fill.releaseType}. The tab was left open.`);
+    releaseBox.value = option.value;
+    releaseBox.dispatchEvent(new Event("change", { bubbles: true }));
+  } else if (plain(releaseBox).toLowerCase() !== wantedType) {
+    press(releaseBox);
+    let option: Element | undefined;
+    await waitFor(() => {
+      option = [...doc.querySelectorAll("[role='option'], [role='menuitem'], li, button")].find((node) => {
+        const text = plain(node).toLowerCase();
+        return text === wantedType || text.startsWith(`${wantedType} `);
+      });
+      return option instanceof HTMLElement;
+    });
+    if (!(option instanceof HTMLElement)) {
+      return miss("release type", "no release type", "CurseForge form has no release type. The tab was left open.");
+    }
+    press(option);
   }
   filled.push("release type");
   note(`release type ${fill.releaseType}`);

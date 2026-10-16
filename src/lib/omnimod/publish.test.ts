@@ -23,6 +23,7 @@ import {
   ticketBody,
   ticketHref,
   ticketTitle,
+  withCurseForgePage,
   type PublishInput,
   type SiteResult,
   type Transport,
@@ -544,6 +545,11 @@ describe("curseForge file", () => {
       curseForgeViewUrl({ fileId: "9", slug: "simple mod", projectId: "1744552" }),
       "https://www.curseforge.com/projects/simple%20mod/files/9",
     );
+    const download = { id: "curseforge" as const, status: "success" as const, message: "ok", url: "https://edge.forgecdn.net/files/1/a.zip" };
+    assert.equal(withCurseForgePage(download, "1744552").url, "https://authors.curseforge.com/#/projects/1744552/files");
+    assert.equal(withCurseForgePage(download, " ").url, download.url);
+    assert.equal(withCurseForgePage({ ...download, status: "error" }, "1744552").url, download.url);
+    assert.equal(withCurseForgePage({ ...download, id: "nexus" }, "1744552").url, download.url);
     assert.equal(curseForgeDocumentToken(200, "<!doctype html>"), true);
     assert.equal(curseForgeDocumentToken(200, "<html></html>"), true);
     assert.equal(curseForgeDocumentToken(200, "ok", "text/html"), true);
@@ -599,6 +605,36 @@ describe("curseForge authors form", () => {
     <div role="dialog"><input /><button type="button">Add to relations</button></div>
     <button type="button">Add File</button>
   `;
+
+  it("reads a Minecraft title on a div and reports a missing field", async () => {
+    mount(`
+      <input type="file" />
+      <label>Display name <input id="name" /></label>
+      <label><input type="radio" /> Publish this file automatically once approved</label>
+      <div class="details-field-title">Minecraft Versions</div>
+      <button type="button" role="option">26.3</button>
+      <div class="details-field-title">Release Type</div>
+      <button type="button" role="option">Release</button>
+      <button type="button">Add File</button>
+      <a href="https://authors.curseforge.com/#/projects/1/files/50">file</a>
+    `);
+    const titled = await fillCurseForgePage({ ...fill, changelog: "", relations: [] });
+    assert.equal(titled.ok && titled.url, "https://authors.curseforge.com/#/projects/1/files/50");
+
+    mount(`
+      <input type="file" />
+      <label>Display name <input /></label>
+      <label><input type="radio" /> Publish this file automatically once approved</label>
+      <button type="button">Add File</button>
+    `);
+    const missing = await fillCurseForgePage({ ...fill, changelog: "", relations: [] });
+    assert.equal(missing.ok, false);
+    if (!missing.ok) {
+      assert.equal(missing.step, "minecraft");
+      assert.equal(missing.reason, "no Minecraft field");
+      assert.deepEqual(missing.filled, ["file", "display name", "release"]);
+    }
+  });
 
   it("keeps the release labels inside the injected function", () => {
     const source = fillCurseForgePage.toString();
@@ -872,7 +908,77 @@ describe("curseForge authors form", () => {
       <button type="button">Add File</button>
     `);
     const orphanSelect = await fillCurseForgePage({ ...fill, displayName: "", changelog: "", waitMs: 0 });
-    assert.match(orphanSelect.ok ? "" : orphanSelect.message, /no release type/);
+    assert.equal(orphanSelect.ok, false);
+    if (!orphanSelect.ok) assert.equal(orphanSelect.step, "submit");
+
+    mount(`
+      <input type="file" />
+      <label><input type="radio" /> Publish this file automatically once approved</label>
+      <div>
+        <span>Minecraft *</span>
+        <span>26.3</span>
+      </div>
+      <div>
+        <div>Release Type</div>
+        <p>Set your project's visibility on CurseForge based on its release stage</p>
+        <div role="combobox">Release</div>
+      </div>
+      <button type="button">Add File</button>
+      <a href="https://authors.curseforge.com/#/projects/1/files/30">file</a>
+    `);
+    const menu = document.querySelector("[role='combobox']") as HTMLElement;
+    menu.addEventListener("mousedown", () => {
+      document.body.insertAdjacentHTML("beforeend", `<ul><li role="option">Release</li><li role="option">Beta</li><li role="option">Alpha</li></ul>`);
+    });
+    const picked = await fillCurseForgePage({ ...fill, displayName: "", releaseType: "Alpha", changelog: "", relations: [], waitMs: 30, stepMs: 5 });
+    assert.equal(picked.ok, true);
+
+    mount(`
+      <input type="file" />
+      <label>Display name <input /></label>
+      <label><input type="radio" /> Publish this file automatically once approved</label>
+      <div>
+        <div>Release Type</div>
+        <div role="combobox">Release</div>
+      </div>
+      <button type="button">Add File</button>
+      <a href="https://authors.curseforge.com/#/projects/1/files/31">file</a>
+    `);
+    setTimeout(() => {
+      document.body.insertAdjacentHTML("afterbegin", `<div><span>Minecraft *</span><span>26.3</span></div>`);
+    }, 10);
+    const late = await fillCurseForgePage({ ...fill, displayName: "", changelog: "", relations: [], waitMs: 40, stepMs: 5 });
+    assert.equal(late.ok, true);
+
+    mount(`
+      <input type="file" />
+      <label><input type="radio" /> Publish this file automatically once approved</label>
+      <div>
+        <span>Minecraft *</span>
+        <div id="extra"><span>26.3</span><button type="button" aria-label="Remove">×</button></div>
+        <div role="combobox">Versions</div>
+      </div>
+      <div>
+        <div>Release Type</div>
+        <div role="combobox">Release</div>
+      </div>
+      <button type="button">Add File</button>
+      <a href="https://authors.curseforge.com/#/projects/1/files/32">file</a>
+    `);
+    let removed = false;
+    document.querySelector("#extra button")?.addEventListener("click", () => {
+      removed = true;
+      document.getElementById("extra")?.remove();
+    });
+    const versions = document.querySelector("[role='combobox']") as HTMLElement;
+    versions.addEventListener("mousedown", () => {
+      if (!document.querySelector("[role='option']")) {
+        document.body.insertAdjacentHTML("beforeend", `<button type="button" role="option">26.2</button>`);
+      }
+    });
+    const only = await fillCurseForgePage({ ...fill, displayName: "", versions: ["26.2"], changelog: "", relations: [], waitMs: 30, stepMs: 5 });
+    assert.equal(removed, true);
+    assert.equal(only.ok, true);
 
     const location = document.location as unknown as { href: string };
     const href = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(location), "href");
@@ -905,7 +1011,6 @@ describe("curseForge authors form", () => {
     const arrived = await fillCurseForgePage({ ...fill, changelog: "", waitMs: 40, stepMs: 5 });
     HTMLButtonElement.prototype.click = originalClick;
     if (document.location.href.includes("/files/11")) assert.equal(arrived.ok && arrived.url, document.location.href);
-
     mount(form);
     const emptyVersions = await fillCurseForgePage({ ...fill, versions: [], changelog: "", mime: "", waitMs: 0 });
     assert.match(emptyVersions.ok ? "" : emptyVersions.message, /game version/);
@@ -1059,6 +1164,134 @@ describe("curseForge authors form", () => {
     const closed = await fillCurseForgePage(fill);
     assert.match(closed.ok ? "" : closed.message, /changelog/);
     delete win.tinymce;
+  });
+
+  it("drops copied Minecraft versions and reports a release control that is not there", async () => {
+    const view = Object.getOwnPropertyDescriptor(Document.prototype, "defaultView");
+    Object.defineProperty(document, "defaultView", { configurable: true, get: () => null });
+    mount(`
+      <input type="file" />
+      <label>Display name <input /></label>
+      <label><input type="radio" /> Publish this file automatically once approved</label>
+      <div>
+        <span>Minecraft *</span>
+        <div role="option">26.9</div>
+        <span>26.2</span>
+        <span>9.9</span>
+        <div>8.8<button type="button">×</button></div>
+        <div>26.4<button type="button"></button></div>
+        <li>11111111111111111111111111111111111111111<button type="button">ok</button></li>
+        <span>notes</span>
+      </div>
+      <label>Release Type <select><option>Release</option></select></label>
+      <button type="button">Add File</button>
+      <a href="https://authors.curseforge.com/#/projects/1/files/40">file</a>
+    `);
+    const kept = await fillCurseForgePage({ ...fill, displayName: "", versions: ["26.2"], changelog: "", relations: [] });
+    if (view) Object.defineProperty(document, "defaultView", view);
+    assert.equal(kept.ok, true);
+
+    mount(`
+      <input type="file" />
+      <label><input type="radio" /> Publish this file automatically once approved</label>
+      <div id="mine">
+        <span>Minecraft *</span>
+        <span>26.4<button id="drop" type="button" aria-label="Remove">x</button></span>
+      </div>
+      <label>Release Type <select><option>Release</option></select></label>
+      <button type="button">Add File</button>
+    `);
+    document.getElementById("drop")?.addEventListener("click", () => document.getElementById("mine")?.remove());
+    const gone = await fillCurseForgePage({ ...fill, displayName: "", versions: ["26.2"], changelog: "", relations: [] });
+    assert.equal(gone.ok, false);
+    if (!gone.ok) assert.equal(gone.reason, "no Minecraft field");
+
+    mount(`
+      <input type="file" />
+      <label><input type="radio" /> Publish this file automatically once approved</label>
+      <span>Minecraft *</span>
+      <button type="button" role="option">26.3</button>
+      <span>Release Type</span>
+      <button type="button">Add File</button>
+    `);
+    const noBox = await fillCurseForgePage({ ...fill, displayName: "", changelog: "", relations: [] });
+    assert.equal(noBox.ok, false);
+    if (!noBox.ok) assert.equal(noBox.step, "release type");
+
+    mount(`
+      <input type="file" />
+      <label><input type="radio" /> Publish this file automatically once approved</label>
+      <span>Minecraft *</span>
+      <button type="button" role="option">26.3</button>
+      <div><span>Release Type</span></div>
+      <button type="button">Beta</button>
+      <button type="button">Add File</button>
+    `);
+    const noChoice = await fillCurseForgePage({ ...fill, displayName: "", changelog: "", relations: [], waitMs: 20, stepMs: 5 });
+    assert.equal(noChoice.ok, false);
+    if (!noChoice.ok) assert.equal(noChoice.step, "release type");
+
+    mount(`
+      <input type="file" />
+      <label><input type="radio" /> Publish this file automatically once approved</label>
+      <span>Minecraft *</span>
+      <button type="button" role="option">26.3</button>
+      <div>
+        <div>
+          extra
+          <span>Release Type</span>
+        </div>
+        <select><option>Release</option></select>
+      </div>
+      <button type="button">Add File</button>
+      <a href="https://authors.curseforge.com/#/projects/1/files/42">file</a>
+    `);
+    const walked = await fillCurseForgePage({ ...fill, displayName: "", changelog: "", relations: [] });
+    assert.equal(walked.ok, true);
+
+    mount(`
+      <input type="file" />
+      <label><input type="radio" /> Publish this file automatically once approved</label>
+      <span>Minecraft *</span>
+      <button type="button" role="option">26.3</button>
+      <button type="button">Add File</button>
+    `);
+    const unlabeled = await fillCurseForgePage({ ...fill, displayName: "", changelog: "", relations: [] });
+    assert.equal(unlabeled.ok, false);
+    if (!unlabeled.ok) assert.equal(unlabeled.step, "release type");
+  });
+
+  it("removes a copied Minecraft chip that was not requested", async () => {
+    let dropped = 0;
+    let kept = 0;
+    mount(`
+      <input type="file" />
+      <label><input type="radio" /> Publish this file automatically once approved</label>
+      <div>
+        <span>Minecraft</span>
+        <div class="MuiChip-root" id="old">
+          <span class="MuiChip-label">26.3</span>
+          <svg class="MuiChip-deleteIcon" data-testid="CancelIcon"></svg>
+        </div>
+        <div class="MuiChip-root" id="keep">
+          <span class="MuiChip-label">26.2</span>
+          <svg class="MuiChip-deleteIcon" data-testid="CancelIcon"></svg>
+        </div>
+      </div>
+      <label>Release Type <select><option>Release</option></select></label>
+      <button type="button">Add File</button>
+      <a href="https://authors.curseforge.com/#/projects/1/files/43">file</a>
+    `);
+    document.querySelector("#old svg")?.addEventListener("click", () => {
+      dropped += 1;
+    });
+    document.querySelector("#keep svg")?.addEventListener("click", () => {
+      kept += 1;
+    });
+    const result = await fillCurseForgePage({ ...fill, displayName: "", versions: ["26.2"], changelog: "", relations: [] });
+    assert.equal(dropped, 1);
+    assert.equal(kept, 0);
+    assert.equal(result.ok, true);
   });
 
   it("stops on a jar and writes a hidden markdown box through the other editor", async () => {
