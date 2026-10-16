@@ -24,7 +24,6 @@ import {
   typeBlock,
   uploadHint,
   uploadRule,
-  type ConfigMap,
   type Platform,
   type PlatformConfig,
   type PlatformId,

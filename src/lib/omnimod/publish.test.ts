@@ -800,8 +800,6 @@ describe("curseForge authors form", () => {
     mount(form);
     assert.match((await fillCurseForgePage({ ...fill, waitMs: 30, stepMs: 5 })).message ?? "", /did not finish/);
 
-    const inputSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
-    const areaSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value");
     mount(`${form}<a href="https://authors.curseforge.com/#/projects/1/files/2">file</a>`);
     assert.equal((await fillCurseForgePage({ ...fill, code: true, relations: [] })).ok, true);
 
