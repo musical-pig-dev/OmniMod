@@ -10,6 +10,7 @@ import {
   type PublishInput,
 } from "./publish.ts";
 import { studioTransport } from "./storage.ts";
+import { completeThunderstoreZip, pngIconFits } from "./zip.ts";
 
 export const OMNIMOD_EXTENSION_ID = "bcaflimdmlindhijdekblbebekkbgegn";
 
@@ -282,17 +283,21 @@ async function publishThunderstore(
   fields: Record<string, string>,
 ): Promise<TransportResult> {
   const file = input.file!;
-  const missing = await thunderstorePackage(file);
+  const iconField = (fields.icon ?? "").trim();
+  const icon = configuredIcon(iconField);
+  if (iconField && !icon) return { ok: false, message: "Thunderstore icon must be a PNG no larger than 256×256." };
+  const packed = completeThunderstoreZip(new Uint8Array(await file.arrayBuffer()), input, icon) ?? file;
+  const missing = await thunderstorePackage(packed);
   if (missing) return { ok: false, message: missing };
   const token = (fields.token ?? "").trim();
   const team = (fields.namespace ?? "").trim();
   const community = (fields.community ?? "").trim();
   if (!community) return { ok: false, message: "Thunderstore needs a community slug." };
-  const bytes = new Uint8Array(await file.arrayBuffer());
+  const bytes = new Uint8Array(await packed.arrayBuffer());
   const started = await fetchImpl("https://thunderstore.io/api/experimental/usermedia/initiate-upload/", {
     method: "POST",
     headers: thunderstoreHeaders(token),
-    body: JSON.stringify({ filename: input.fileName || "package.zip", file_size_bytes: file.size }),
+    body: JSON.stringify({ filename: input.fileName || "package.zip", file_size_bytes: packed.size }),
   });
   if (!started.ok) return { ok: false, message: await errorText(started) };
   let session: { user_media?: { uuid?: string }; upload_urls?: Array<Record<string, unknown>> };
@@ -345,6 +350,20 @@ async function publishThunderstore(
 }
 
 const THUNDERSTORE_ROOT = ["icon.png", "README.md", "manifest.json"];
+
+function configuredIcon(value: string): Uint8Array | null {
+  const match = /^data:image\/png;base64,([A-Za-z0-9+/=]*)$/.exec(value.trim());
+  if (!match?.[1]) return null;
+  let binary = "";
+  try {
+    binary = atob(match[1]);
+  } catch {
+    return null;
+  }
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return pngIconFits(bytes) ? bytes : null;
+}
 
 function packageName(text: string): string {
   const found = text.match(/"name"\s*:\s*"([^"\\]+)"/);

@@ -25,6 +25,7 @@ export type PlatformField = {
   secret?: boolean;
   placeholder: string;
   optional?: boolean;
+  file?: boolean;
   defaultValue?: string;
   choices?: FieldChoice[];
 };
@@ -97,6 +98,7 @@ export const PLATFORMS: Platform[] = [
       { key: "namespace", label: "Team namespace", placeholder: "MyTeam" },
       { key: "community", label: "Community", placeholder: "riskofrain2" },
       { key: "categories", label: "Categories", placeholder: "items, skills", optional: true },
+      { key: "icon", label: "Icon", placeholder: "256×256 PNG", optional: true, file: true },
     ],
   },
   {

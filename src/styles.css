@@ -27,6 +27,7 @@
   body {
     background: var(--color-ink);
     color: var(--color-ivory);
+    color-scheme: dark;
   }
 
   @media (prefers-reduced-motion: reduce) {

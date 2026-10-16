@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { OMNIMOD_EXTENSION_ID, liveHost, liveTransport, selectTransport, sleep, chromeCurseDriver } from "./live.ts";
 import type { CurseFormFill, PublishInput, Transport } from "./publish.ts";
+import { makeZip } from "./zip.ts";
 
 const file = new Blob([new Uint8Array([1, 2, 3])], { type: "application/zip" });
 const pack = new Blob(["icon.png README.md manifest.json"]);
@@ -492,6 +493,75 @@ describe("live transport", () => {
     assert.match(posted.find((body) => body.includes("filename")) ?? "", /package\.zip/);
     const partial = new Blob(["icon.png README.md"]);
     assert.match((await transport("thunderstore", input(ready, { file: partial }))).message ?? "", /manifest\.json/);
+    const jarZip = makeZip([{ name: "mod.jar", bytes: new Uint8Array([1, 2, 3]) }], "MyProject.zip");
+    const mark = new Uint8Array(24);
+    mark.set([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82]);
+    new DataView(mark.buffer).setUint32(16, 256);
+    new DataView(mark.buffer).setUint32(20, 256);
+    let binary = "";
+    for (const byte of mark) binary += String.fromCharCode(byte);
+    const icon = `data:image/png;base64,${btoa(binary)}`;
+    const wide = new Uint8Array(mark);
+    new DataView(wide.buffer).setUint32(16, 512);
+    let wideBinary = "";
+    for (const byte of wide) wideBinary += String.fromCharCode(byte);
+    assert.match(
+      (
+        await host(async () => new Response(""))(
+          "thunderstore",
+          input({ ...ready, icon: `data:image/png;base64,${btoa(wideBinary)}` }, { file: jarZip }),
+        )
+      ).message ?? "",
+      /no larger than 256/,
+    );
+    assert.match(
+      (await host(async () => new Response(""))("thunderstore", input({ ...ready, icon: "data:image/png;base64,a" }, { file: jarZip }))).message ?? "",
+      /no larger than 256/,
+    );
+    assert.match(
+      (await host(async () => new Response(""))(
+        "thunderstore",
+        input(ready, { file: jarZip, fileName: "MyProject.zip", fields: undefined }),
+      )).message ?? "",
+      /icon\.png/,
+    );
+    assert.match(
+      (await host(async () => new Response(""))("thunderstore", input({ ...ready, icon: "nope" }, { file: jarZip }))).message ?? "",
+      /no larger than 256/,
+    );
+    assert.match(
+      (await host(async () => new Response(""))("thunderstore", input({ ...ready, icon: "data:image/png;base64," }, { file: jarZip }))).message ?? "",
+      /no larger than 256/,
+    );
+    let sent = new Uint8Array();
+    const packedFetch: typeof fetch = async (url, init) => {
+      const target = String(url);
+      if (target.includes("initiate-upload")) {
+        return jsonResponse(
+          {
+            user_media: { uuid: "up-2" },
+            upload_urls: [{ url: "https://files.example/pack", part_number: 1, offset: 0, length: 9_000_000 }],
+          },
+          201,
+        );
+      }
+      if (target.includes("files.example/pack")) {
+        sent = new Uint8Array(await new Response(init?.body).arrayBuffer());
+        return new Response(null, { status: 200, headers: { etag: '"etag"' } });
+      }
+      return new Response("", { status: 204 });
+    };
+    const added = await host(packedFetch)(
+      "thunderstore",
+      input({ ...ready, icon }, { file: jarZip, fileName: "MyProject.zip", version: "0.0.6", changelog: "Notes." }),
+    );
+    assert.equal(added.ok, true);
+    const packedText = new TextDecoder().decode(sent);
+    assert.match(packedText, /icon\.png/);
+    assert.match(packedText, /README\.md/);
+    assert.match(packedText, /manifest\.json/);
+    assert.match(packedText, /mod\.jar/);
+    assert.match(packedText, /"name": "MyProject"/);
   });
 });
 

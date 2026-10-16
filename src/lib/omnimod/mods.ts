@@ -84,6 +84,36 @@ export function readHostFile(value: unknown): ConfigMap | null {
   return normalizeConfigs(raw.configs as Partial<ConfigMap>);
 }
 
+export function libraryFile(mods: ModRecord[]) {
+  return {
+    kind: "omnimod-library" as const,
+    mods: mods.map((mod) => ({
+      id: mod.id,
+      name: mod.name,
+      fileName: mod.fileName,
+      version: mod.version,
+      changelog: mod.changelog,
+      autoZip: mod.autoZip,
+      zipName: mod.zipName,
+      publishedVersions: mod.publishedVersions,
+      curseforgeOverride: mod.curseforgeOverride,
+      configs: normalizeConfigs(mod.configs),
+    })),
+  };
+}
+
+export function readLibraryFile(value: unknown): ModRecord[] | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as { kind?: unknown; mods?: unknown };
+  if (raw.kind !== "omnimod-library" || !Array.isArray(raw.mods)) return null;
+  const mods: ModRecord[] = [];
+  for (const item of raw.mods) {
+    if (!item || typeof item !== "object") return null;
+    mods.push(hydrateMod(item as StoredMod, defaultConfigs()));
+  }
+  return mods;
+}
+
 function curseOverride(value: unknown): Record<string, string> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const next: Record<string, string> = {};

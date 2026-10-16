@@ -5,6 +5,8 @@ import {
   ChevronRight,
   Copy,
   ExternalLink,
+  FolderInput,
+  FolderOutput,
   Gamepad2,
   KeyRound,
   Lock,
@@ -33,11 +35,11 @@ import {
 } from "@/lib/omnimod/catalog";
 import {
   createMod,
-  hostFile,
   lastPublished,
+  libraryFile,
   nameTaken,
   normalizeConfigs,
-  readHostFile,
+  readLibraryFile,
   recordPublish,
   versionUsed,
   type ModRecord,
@@ -53,7 +55,7 @@ import {
 import { VAULT_KEY, importRecoveryKey, openValue, openVault, seal, sealValue, sealedRecord, type VaultPayload } from "@/lib/omnimod/vault";
 import { RevisionLink } from "@/components/omnimod/revision";
 import { ProtectKeys, UnlockKeys } from "@/components/omnimod/vault-lock";
-import { archiveName, makeZip } from "@/lib/omnimod/zip";
+import { archiveName, makeZip, pngIconFits } from "@/lib/omnimod/zip";
 
 import {
   findOpenTicket,
@@ -419,6 +421,7 @@ export function SiteCard({
   const hasValue = fields.some((field) => (config.fields[field.key] ?? "").trim().length > 0);
   const panelId = useId();
   const note = muted ? null : blocked;
+  const [fileNote, setFileNote] = useState("");
   return (
     <article className={`rounded-card border border-line ${muted ? "border-line/40 bg-ink opacity-40" : "bg-panel"} ${!muted && blocked ? "opacity-80" : ""}`}>
       <div className="flex items-center gap-3 px-4 py-3">
@@ -485,6 +488,38 @@ export function SiteCard({
                       })
                     }
                   />
+                ) : field.file ? (
+                  <div>
+                    <input
+                      type="file"
+                      accept="image/png,.png"
+                      aria-label={field.label}
+                      disabled={locked}
+                      onChange={(event) => {
+                        const chosen = event.target.files?.[0];
+                        event.target.value = "";
+                        if (!chosen) return;
+                        void chosen.arrayBuffer().then((buffer) => {
+                          const bytes = new Uint8Array(buffer);
+                          if (!pngIconFits(bytes)) {
+                            setFileNote("Use a PNG no larger than 256×256.");
+                            return;
+                          }
+                          const reader = new FileReader();
+                          reader.onload = () => {
+                            const value = String(reader.result);
+                            if (!value.startsWith("data:image/png")) return;
+                            setFileNote("");
+                            onChange({ ...config, fields: { ...config.fields, [field.key]: value } });
+                          };
+                          reader.readAsDataURL(chosen);
+                        });
+                      }}
+                      className="block w-full text-sm text-mist file:mr-3 file:h-11 file:rounded-full file:border file:border-line file:bg-ink file:px-4 file:text-ivory"
+                    />
+                    {stored.startsWith("data:image/png") ? <p className="mt-1 text-sm text-brass">PNG set</p> : null}
+                    {fileNote ? <p className="mt-1 text-sm text-bad">{fileNote}</p> : null}
+                  </div>
                 ) : (
                   <input
                     type={field.secret ? "password" : "text"}
@@ -1075,7 +1110,7 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = "omnimod-hosts.json";
+    link.download = "omnimod.json";
     link.click();
     URL.revokeObjectURL(url);
   }
@@ -1083,7 +1118,7 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
   async function exportHosts() {
     setHostFileError("");
     setHostKeyError(false);
-    const text = JSON.stringify(hostFile(active.configs));
+    const text = JSON.stringify(libraryFile(mods));
     if (vault !== "open") {
       downloadHosts(text);
       return;
@@ -1100,7 +1135,7 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
     try {
       parsed = JSON.parse(text);
     } catch {
-      setHostFileError("That file is not a host export.");
+      setHostFileError("That file is not an export.");
       return;
     }
     if (sealedRecord(parsed)) {
@@ -1111,12 +1146,14 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
       setHostGate("import");
       return;
     }
-    const configs = readHostFile(parsed);
-    if (!configs) {
-      setHostFileError("That file is not a host export.");
+    const imported = readLibraryFile(parsed);
+    if (!imported) {
+      setHostFileError("That file is not an export.");
       return;
     }
-    patchMod(active.id, { configs });
+    setMods(imported);
+    setActiveId(imported[0]?.id ?? "");
+    setLibraryOpen(true);
     setHostGate(null);
     setHostFileError("");
   }
@@ -1143,12 +1180,14 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
       setHostKeyError(true);
       return;
     }
-    const configs = readHostFile(opened.value);
-    if (!configs) {
+    const imported = readLibraryFile(opened.value);
+    if (!imported) {
       setHostKeyError(true);
       return;
     }
-    patchMod(active!.id, { configs });
+    setMods(imported);
+    setActiveId(imported[0]?.id ?? "");
+    setLibraryOpen(true);
     setHostGate(null);
   }
 
@@ -1271,79 +1310,22 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
                 {results ? ` · ${sent} sent${failed ? ` · ${failed} failed` : ""}` : ""}
               </p>
               {active ? (
-                <div className="flex flex-wrap items-center justify-end gap-2">
-                  <button
-                    type="button"
-                    onClick={() => void exportHosts()}
-                    className="h-11 rounded-full border border-line px-4 text-sm text-ivory"
-                  >
-                    Export hosts
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => importHosts.current!.click()}
-                    className="h-11 rounded-full border border-line px-4 text-sm text-ivory"
-                  >
-                    Import hosts
-                  </button>
-                  <input
-                    ref={importHosts}
-                    aria-label="Import hosts file"
-                    type="file"
-                    accept="application/json,.json"
-                    className="sr-only"
-                    onChange={(event) => {
-                      const file = event.target.files?.[0];
-                      event.target.value = "";
-                      void onImportFile(file);
-                    }}
-                  />
-                  <FancySelect
-                    pill
-                    label="Mod"
-                    value={active.id}
-                    choices={mods.map((mod) => ({ value: mod.id, label: mod.name }))}
-                    onChange={(id) => {
-                      setActiveId(id);
-                      setOpenId(null);
-                      setNameEdit(null);
-                      setFileSize(null);
-                      setResults(null);
-                      setHostGate(null);
-                    }}
-                  />
-                </div>
+                <FancySelect
+                  pill
+                  label="Mod"
+                  value={active.id}
+                  choices={mods.map((mod) => ({ value: mod.id, label: mod.name }))}
+                  onChange={(id) => {
+                    setActiveId(id);
+                    setOpenId(null);
+                    setNameEdit(null);
+                    setFileSize(null);
+                    setResults(null);
+                    setHostGate(null);
+                  }}
+                />
               ) : null}
             </div>
-            {hostGate ? (
-              <form
-                className="flex flex-wrap items-center gap-2 px-1"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void confirmHostKey();
-                }}
-              >
-                <input
-                  type="password"
-                  aria-label="Recovery key"
-                  value={hostSecret}
-                  onChange={(event) => {
-                    setHostSecret(event.target.value);
-                    setHostKeyError(false);
-                  }}
-                  className="h-11 min-w-0 flex-1 rounded-xl border border-line bg-ink px-3 font-mono text-sm outline-none focus:border-brass"
-                />
-                <button
-                  type="submit"
-                  disabled={!hostSecret.trim()}
-                  className="h-11 rounded-full bg-brass px-4 text-sm font-medium text-brass-ink disabled:cursor-not-allowed disabled:bg-line disabled:text-mist"
-                >
-                  Continue
-                </button>
-              </form>
-            ) : null}
-            {hostKeyError ? <p className="px-1 text-sm text-bad">That key does not open these hosts.</p> : null}
-            {hostFileError ? <p className="px-1 text-sm text-bad">{hostFileError}</p> : null}
             <p className="px-1 text-sm text-mist">{uploadHint(rule)}</p>
             {active ? (
               <>
@@ -1598,19 +1580,81 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
                         </button>
                       </div>
                     </form>
-                  ) : (
+                  ) : null}
+                  <div className="flex items-center justify-end gap-2">
+                    {naming ? null : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setNaming(true);
+                          setDraftName("");
+                          setBaseId("");
+                        }}
+                        className="mr-auto min-h-11 text-sm text-brass"
+                      >
+                        Add a mod
+                      </button>
+                    )}
                     <button
                       type="button"
-                      onClick={() => {
-                        setNaming(true);
-                        setDraftName("");
-                        setBaseId("");
-                      }}
-                      className="min-h-11 text-sm text-brass"
+                      aria-label="Export"
+                      title="Export"
+                      onClick={() => void exportHosts()}
+                      className="grid size-11 place-items-center rounded-full border border-line text-ivory hover:border-brass hover:text-brass"
                     >
-                      Add a mod
+                      <FolderOutput className="size-5" aria-hidden="true" />
                     </button>
-                  )}
+                    <button
+                      type="button"
+                      aria-label="Import"
+                      title="Import"
+                      onClick={() => importHosts.current!.click()}
+                      className="grid size-11 place-items-center rounded-full border border-line text-ivory hover:border-brass hover:text-brass"
+                    >
+                      <FolderInput className="size-5" aria-hidden="true" />
+                    </button>
+                    <input
+                      ref={importHosts}
+                      aria-label="Import file"
+                      type="file"
+                      accept="application/json,.json"
+                      className="sr-only"
+                      onChange={(event) => {
+                        const file = event.target.files?.[0];
+                        event.target.value = "";
+                        void onImportFile(file);
+                      }}
+                    />
+                  </div>
+                  {hostGate ? (
+                    <form
+                      className="flex flex-wrap items-center gap-2"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        void confirmHostKey();
+                      }}
+                    >
+                      <input
+                        type="password"
+                        aria-label="Recovery key"
+                        value={hostSecret}
+                        onChange={(event) => {
+                          setHostSecret(event.target.value);
+                          setHostKeyError(false);
+                        }}
+                        className="h-11 min-w-0 flex-1 rounded-xl border border-line bg-ink px-3 font-mono text-sm outline-none focus:border-brass"
+                      />
+                      <button
+                        type="submit"
+                        disabled={!hostSecret.trim()}
+                        className="h-11 rounded-full bg-brass px-4 text-sm font-medium text-brass-ink disabled:cursor-not-allowed disabled:bg-line disabled:text-mist"
+                      >
+                        Continue
+                      </button>
+                    </form>
+                  ) : null}
+                  {hostKeyError ? <p className="text-sm text-bad">That key does not open these hosts.</p> : null}
+                  {hostFileError ? <p className="text-sm text-bad">{hostFileError}</p> : null}
                 </div>
               ) : (
               <>

@@ -4,7 +4,9 @@ import { PLATFORM_IDS, defaultConfigs } from "./catalog.ts";
 import {
   createMod,
   emptyTargets,
+  libraryFile,
   hostFile,
+  readLibraryFile,
   hydrateMod,
   lastPublished,
   nextFreeVersion,
@@ -149,6 +151,22 @@ describe("mods", () => {
     assert.equal(readHostFile({ kind: "omnimod-hosts", configs: null }), null);
     assert.equal(readHostFile({ kind: "omnimod-hosts", configs: "no" }), null);
     assert.equal(readHostFile({ kind: "omnimod-hosts" }), null);
+    const mod = createMod("Lanterns");
+    mod.configs.nexus.fields.apiKey = "secret";
+    mod.autoZip = true;
+    mod.zipName = "Bundle.zip";
+    mod.configs.thunderstore.fields.icon = "data:image/png;base64,abc";
+    const library = libraryFile([mod]);
+    assert.equal(library.kind, "omnimod-library");
+    assert.equal(readLibraryFile(library)?.[0]?.configs.nexus.fields.apiKey, "secret");
+    assert.equal(readLibraryFile(library)?.[0]?.name, "Lanterns");
+    assert.equal(readLibraryFile(library)?.[0]?.autoZip, true);
+    assert.equal(readLibraryFile(library)?.[0]?.zipName, "Bundle.zip");
+    assert.equal(readLibraryFile(library)?.[0]?.configs.thunderstore.fields.icon, "data:image/png;base64,abc");
+    assert.equal(readLibraryFile(null), null);
+    assert.equal(readLibraryFile({ kind: "omnimod-library" }), null);
+    assert.equal(readLibraryFile({ kind: "omnimod-library", mods: ["no"] }), null);
+    assert.equal(readLibraryFile({ kind: "nope", mods: [] }), null);
   });
 
   it("keeps published versions when a saved mod is loaded", () => {

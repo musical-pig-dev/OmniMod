@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SiteResult, Transport } from "@/lib/omnimod/publish";
@@ -6,7 +6,7 @@ import { ticketTitle } from "@/lib/omnimod/publish";
 import { Delivery, ReleaseCard, ResultDeck, ResultSlip, SiteCard, Studio } from "./studio";
 import { platformById } from "@/lib/omnimod/catalog";
 import { emptyConfig } from "@/lib/omnimod/catalog";
-import { createMod, hostFile, readHostFile } from "@/lib/omnimod/mods";
+import { createMod, libraryFile, readLibraryFile } from "@/lib/omnimod/mods";
 import { MODS_KEY } from "@/lib/omnimod/storage";
 import * as vault from "@/lib/omnimod/vault";
 
@@ -983,20 +983,68 @@ describe("Studio", () => {
     render(<Studio transport={ok} />);
     await addMod(user, "Lanterns");
     await user.click(screen.getByRole("button", { name: /Hosts/ }));
+    await user.click(screen.getByRole("checkbox", { name: "Auto-zip" }));
+    await user.type(screen.getByRole("textbox", { name: "Zip name" }), "Bundle.zip");
     await user.click(screen.getByRole("button", { name: /Nexus Mods/ }));
     await typeField(user, "API key", "secret");
-    const text = await captureDownload(() => user.click(screen.getByRole("button", { name: "Export hosts" })));
+    await user.click(screen.getByRole("button", { name: "1" }));
+    const text = await captureDownload(() => user.click(screen.getByRole("button", { name: "Export" })));
     expect(text).toContain("secret");
-    await user.click(screen.getByRole("button", { name: "Import hosts" }));
-    const imported = hostFile(JSON.parse(text).configs);
-    imported.configs.nexus.fields.apiKey = "next";
-    await user.upload(screen.getByLabelText("Import hosts file"), new File([JSON.stringify(imported)], "hosts.json"));
+    expect(text).toContain("Lanterns");
+    expect(text).toContain("Bundle.zip");
+    expect(JSON.parse(text).mods[0].autoZip).toBe(true);
+    await user.click(screen.getByRole("button", { name: "Import" }));
+    const imported = JSON.parse(text);
+    imported.mods[0].configs.nexus.fields.apiKey = "next";
+    await user.upload(screen.getByLabelText("Import file"), new File([JSON.stringify(imported)], "omnimod.json"));
+    await user.click(screen.getByRole("button", { name: /Hosts/ }));
     expect((screen.getByLabelText("API key") as HTMLInputElement).value).toBe("next");
-    fireEvent.change(screen.getByLabelText("Import hosts file"), { target: { files: [] } });
-    await user.upload(screen.getByLabelText("Import hosts file"), new File(["nope"], "bad.json"));
-    expect(screen.getByText("That file is not a host export.")).toBeTruthy();
-    await user.upload(screen.getByLabelText("Import hosts file"), new File([JSON.stringify({ kind: "no" })], "bad.json"));
-    expect(screen.getByText("That file is not a host export.")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "1" }));
+    fireEvent.change(screen.getByLabelText("Import file"), { target: { files: [] } });
+    await user.upload(screen.getByLabelText("Import file"), new File(["nope"], "bad.json"));
+    expect(screen.getByText("That file is not an export.")).toBeTruthy();
+    await user.upload(screen.getByLabelText("Import file"), new File([JSON.stringify({ kind: "no" })], "bad.json"));
+    expect(screen.getByText("That file is not an export.")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /Hosts/ }));
+    await user.click(screen.getByRole("button", { name: /Thunderstore/ }));
+    const icon = screen.getByLabelText("Icon") as HTMLInputElement;
+    fireEvent.change(icon, { target: { files: [] } });
+    const png = (width: number, height: number) => {
+      const bytes = new Uint8Array(24);
+      bytes.set([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82]);
+      const view = new DataView(bytes.buffer);
+      view.setUint32(16, width);
+      view.setUint32(20, height);
+      return new File([bytes], "icon.png", { type: "image/png" });
+    };
+    await user.upload(icon, png(512, 512));
+    expect(await screen.findByText("Use a PNG no larger than 256×256.")).toBeTruthy();
+    const RealReader = globalThis.FileReader;
+    class TextReader {
+      result: string | ArrayBuffer | null = "data:text/plain;base64,bm9wZQ==";
+      onload: null | (() => void) = null;
+      readAsDataURL() {
+        this.onload?.();
+      }
+    }
+    const small = png(16, 16);
+    const notes = { 0: small, length: 1, item: (index: number) => (index === 0 ? small : null) };
+    vi.stubGlobal("FileReader", TextReader);
+    fireEvent.change(icon, { target: { files: notes } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    vi.stubGlobal("FileReader", RealReader);
+    expect(screen.queryByText("PNG set")).toBeNull();
+    await user.upload(icon, png(256, 16));
+    expect(await screen.findByText("PNG set")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "1" }));
+    const saved = await captureDownload(() => user.click(screen.getByRole("button", { name: "Export" })));
+    expect(saved).toContain("data:image/png;base64,");
+    expect(saved).toContain("Bundle.zip");
+    await user.upload(
+      screen.getByLabelText("Import file"),
+      new File([JSON.stringify({ kind: "omnimod-library", mods: [] })], "empty.json"),
+    );
+    expect(screen.getByRole("heading", { name: "Mods" })).toBeTruthy();
   });
 
   it("asks for the recovery key before moving encrypted hosts", async () => {
@@ -1009,37 +1057,47 @@ describe("Studio", () => {
     render(<Studio transport={ok} />);
     fireEvent.change(await screen.findByLabelText("Key"), { target: { value: secret } });
     await user.click(screen.getByRole("button", { name: "Unlock" }));
-    await user.click(await screen.findByRole("button", { name: /Hosts/ }));
-    await user.click(screen.getByRole("button", { name: "Export hosts" }));
+    await user.click(await screen.findByRole("button", { name: "1" }));
+    await user.click(screen.getByRole("button", { name: "Export" }));
     fireEvent.change(screen.getByLabelText("Recovery key"), { target: { value: "wrong-key" } });
     await user.click(screen.getByRole("button", { name: "Continue" }));
     expect(await screen.findByText("That key does not open these hosts.")).toBeTruthy();
     const text = await captureDownload(async () => {
       fireEvent.change(screen.getByLabelText("Recovery key"), { target: { value: secret } });
       await user.click(screen.getByRole("button", { name: "Continue" }));
+      await waitFor(() => expect(screen.queryByLabelText("Recovery key")).toBeNull());
     });
     const opened = await vault.openValue(secret, text);
-    expect(readHostFile(opened?.value)?.nexus.fields.apiKey).toBe("secret");
-    await user.click(screen.getByRole("button", { name: "Export hosts" }));
+    expect(readLibraryFile(opened?.value)?.[0]?.configs.nexus.fields.apiKey).toBe("secret");
+    await user.click(screen.getByRole("button", { name: "Export" }));
     localStorage.removeItem(vault.VAULT_KEY);
     fireEvent.change(screen.getByLabelText("Recovery key"), { target: { value: secret } });
     await user.click(screen.getByRole("button", { name: "Continue" }));
     expect(await screen.findByText("That key does not open these hosts.")).toBeTruthy();
-    const moved = hostFile(mod.configs);
-    moved.configs.nexus.fields.apiKey = "moved";
+    const moved = libraryFile([mod]);
+    moved.mods[0].configs.nexus.fields.apiKey = "moved";
     const sealed = await vault.sealValue(key!, moved);
-    await user.upload(screen.getByLabelText("Import hosts file"), new File([sealed], "hosts.json"));
+    await user.upload(screen.getByLabelText("Import file"), new File([sealed], "omnimod.json"));
     fireEvent.change(screen.getByLabelText("Recovery key"), { target: { value: "wrong-key" } });
     await user.click(screen.getByRole("button", { name: "Continue" }));
     expect(await screen.findByText("That key does not open these hosts.")).toBeTruthy();
     const junk = await vault.sealValue(key!, { kind: "nope" });
-    await user.upload(screen.getByLabelText("Import hosts file"), new File([junk], "hosts.json"));
+    const empty = await vault.sealValue(key!, { kind: "omnimod-library", mods: [] });
+    await user.upload(screen.getByLabelText("Import file"), new File([junk], "omnimod.json"));
     fireEvent.change(screen.getByLabelText("Recovery key"), { target: { value: secret } });
     await user.click(screen.getByRole("button", { name: "Continue" }));
     expect(await screen.findByText("That key does not open these hosts.")).toBeTruthy();
-    await user.upload(screen.getByLabelText("Import hosts file"), new File([sealed], "hosts.json"));
+    await user.upload(screen.getByLabelText("Import file"), new File([empty], "omnimod.json"));
+    await act(async () => {
+      await Promise.resolve();
+    });
     fireEvent.change(screen.getByLabelText("Recovery key"), { target: { value: secret } });
     await user.click(screen.getByRole("button", { name: "Continue" }));
+    expect(await screen.findByRole("heading", { name: "Mods" })).toBeTruthy();
+    await user.upload(screen.getByLabelText("Import file"), new File([sealed], "omnimod.json"));
+    fireEvent.change(screen.getByLabelText("Recovery key"), { target: { value: secret } });
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    await user.click(screen.getByRole("button", { name: /Hosts/ }));
     await user.click(screen.getByRole("button", { name: /Nexus Mods/ }));
     expect((screen.getByLabelText("API key") as HTMLInputElement).value).toBe("moved");
   });
