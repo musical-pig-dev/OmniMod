@@ -147,7 +147,7 @@ describe("catalog", () => {
     assert.equal(typeBlock(platformById("modrinth"), clash, ""), "These hosts do not accept the same file type.");
     assert.equal(typeBlock(platformById("github"), clash, ""), null);
     assert.match(typeBlock(platformById("nexus"), githubFirst, "") ?? "", /ready hosts need \.jar/);
-    assert.equal(typeBlock(platformById("curseforge"), githubFirst, ""), null);
+    assert.match(typeBlock(platformById("curseforge"), githubFirst, "") ?? "", /ready hosts need \.jar/);
     assert.match(typeBlock(platformById("modrinth"), githubFirst, "lanterns.zip") ?? "", /This file is \.zip/);
     assert.equal(typeBlock(platformById("nexus"), githubFirst, "lanterns.zip"), null);
     assert.equal(typeBlock(platformById("github"), githubFirst, "lanterns.jar"), null);
@@ -216,7 +216,8 @@ describe("catalog", () => {
     configs.curseforge = { enabled: true, fields: { projectId: "9", gameVersions: "17045" } };
     assert.equal(curseForgeOnForm(configs, ""), true);
     assert.equal(curseForgeOnForm(configs, "a.zip"), true);
-    assert.equal(curseForgeOnForm(configs, "a.jar"), true);
+    assert.equal(curseForgeOnForm(configs, "a.jar"), false);
+    assert.equal(curseForgeOnForm(configs, "a.jar", true), true);
     assert.equal(curseForgeOnForm(configs, "notes.txt"), false);
     assert.equal(curseForgeOnForm(configs, "notes.txt", true), true);
     assert.equal(typeBlock(platformById("nexus"), configs, "mod.jar", true), null);

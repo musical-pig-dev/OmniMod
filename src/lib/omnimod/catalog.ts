@@ -96,6 +96,7 @@ export const PLATFORMS: Platform[] = [
       { key: "token", label: "Service token", secret: true, placeholder: "tss_…" },
       { key: "namespace", label: "Team namespace", placeholder: "MyTeam" },
       { key: "community", label: "Community", placeholder: "riskofrain2" },
+      { key: "categories", label: "Categories", placeholder: "items, skills", optional: true },
     ],
   },
   {
@@ -103,7 +104,7 @@ export const PLATFORMS: Platform[] = [
     name: "CurseForge",
     summary: "Authors form. Opens the upload page in a background tab and fills it with the browser login. A project id and game versions. No API token.",
     lane: "bot",
-    accepts: [".zip", ".jar"],
+    accepts: [".zip"],
     tokenUrl: "https://www.curseforge.com/",
     tokenLabel: "Open CurseForge",
     fields: [
@@ -136,7 +137,7 @@ export const PLATFORMS: Platform[] = [
         placeholder: "html",
         defaultValue: "html",
         choices: [
-          { value: "html", label: "HTML" },
+          { value: "html", label: "WYSIWYG" },
           { value: "text", label: "Text" },
           { value: "markdown", label: "Markdown" },
         ],

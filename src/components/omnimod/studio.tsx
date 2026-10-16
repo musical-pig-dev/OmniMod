@@ -51,11 +51,9 @@ import { ProtectKeys, UnlockKeys } from "@/components/omnimod/vault-lock";
 import { archiveName, makeZip } from "@/lib/omnimod/zip";
 
 import {
-  failureSignature,
-  loadTickets,
+  findOpenTicket,
   readyCount,
   runPublish,
-  saveTicket,
   ticketBody,
   ticketHref,
   ticketTitle,
@@ -98,9 +96,12 @@ export function ResultSlip({ result, index }: { result: SiteResult; index: numbe
   const short =
     failed && lane === "bot" && result.step && result.reason ? `${result.step}: ${result.reason}` : result.message;
   const [open, setOpen] = useState(false);
-  const [link, setLink] = useState("");
-  const [saved, setSaved] = useState<string | null>(null);
-  const signature = failureSignature(result);
+  const [ticket, setTicket] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [savedLink, setSavedLink] = useState<string | null>(null);
+  const title = ticketTitle(name, result);
+  const shown = savedLink ?? ticket;
 
   function fieldLabel(key: string): string {
     if (!platform) return key;
@@ -111,18 +112,33 @@ export function ResultSlip({ result, index }: { result: SiteResult; index: numbe
   function toggle() {
     const next = !open;
     setOpen(next);
-    if (next) setSaved(loadTickets()[signature] ?? null);
+    if (!next) return;
+    setChecking(true);
+    setTicket(null);
+    void findOpenTicket(title).then((url) => {
+      setTicket(url);
+      setChecking(false);
+    });
   }
 
   function create() {
-    window.open(ticketHref(ticketTitle(name, result), ticketBody(result), result.id), "_blank", "noopener");
+    window.open(ticketHref(title, ticketBody(result), result.id), "_blank", "noopener");
   }
 
-  function keep() {
-    const url = link.trim();
-    if (!url.startsWith("https://github.com/musical-pig-dev/OmniMod/issues/")) return;
-    saveTicket(signature, url);
-    setSaved(url);
+  function saveLink() {
+    const href = draft.trim();
+    if (!href) return;
+    setSavedLink(href);
+  }
+
+  function download() {
+    const blob = new Blob([ticketBody(result)], { type: "text/plain" });
+    const href = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = href;
+    anchor.download = `omnimod-${result.id}-failure.txt`;
+    anchor.click();
+    URL.revokeObjectURL(href);
   }
 
   return (
@@ -199,8 +215,17 @@ export function ResultSlip({ result, index }: { result: SiteResult; index: numbe
                     </p>
                   ))
                 : null}
-              {saved ? (
-                <a href={saved} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-brass">
+              {result.logs?.length ? (
+                <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded-xl border border-line bg-panel p-3 text-xs text-ivory">
+                  {result.logs.join("\n")}
+                </pre>
+              ) : null}
+              <button type="button" onClick={download} className="h-11 rounded-full border border-line px-4 text-ivory">
+                Download log
+              </button>
+              {checking && !shown ? <p>Checking for an open ticket</p> : null}
+              {shown ? (
+                <a href={shown} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-brass">
                   View Ticket
                   <ExternalLink className="size-3.5" aria-hidden="true" />
                 </a>
@@ -212,12 +237,13 @@ export function ResultSlip({ result, index }: { result: SiteResult; index: numbe
                   <label className="grid gap-1 text-ivory">
                     Issue link
                     <input
-                      value={link}
-                      onChange={(event) => setLink(event.target.value)}
+                      aria-label="Issue link"
+                      value={draft}
+                      onChange={(event) => setDraft(event.target.value)}
                       className="h-11 rounded-xl border border-line bg-ink px-3 text-ivory"
                     />
                   </label>
-                  <button type="button" onClick={keep} className="h-11 rounded-full border border-line px-4 text-ivory">
+                  <button type="button" onClick={saveLink} className="h-11 rounded-full border border-line px-4 text-ivory">
                     Save issue link
                   </button>
                 </div>

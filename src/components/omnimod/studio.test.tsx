@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SiteResult, Transport } from "@/lib/omnimod/publish";
-import { failureSignature } from "@/lib/omnimod/publish";
+import { ticketTitle } from "@/lib/omnimod/publish";
 import { Delivery, ResultSlip, SiteCard, Studio } from "./studio";
 import { platformById } from "@/lib/omnimod/catalog";
 import { emptyConfig } from "@/lib/omnimod/catalog";
@@ -411,7 +411,7 @@ describe("Studio", () => {
     expect(screen.queryByRole("link", { name: "View upload" })).toBeNull();
   });
 
-  it("opens a failed host and stores a ticket link", async () => {
+  it("opens a failed host and links the matching ticket", async () => {
     const user = userEvent.setup();
     const open = vi.spyOn(window, "open").mockImplementation(() => null);
     const bot: SiteResult = {
@@ -423,13 +423,22 @@ describe("Studio", () => {
       filled: ["file", "display name"],
       file: "README.md.zip",
       config: { projectId: "2", custom: "kept" },
+      logs: ["file placed", "stop changelog: both editors stayed empty"],
       url: "https://example.com/should-not-show",
     };
+    const title = ticketTitle("CurseForge", bot);
+    let release: (value: { ok: boolean; json: () => Promise<unknown> }) => void = () => {};
+    const pending = new Promise<{ ok: boolean; json: () => Promise<unknown> }>((resolve) => {
+      release = resolve;
+    });
+    const fetchMock = vi.fn(() => pending);
+    vi.stubGlobal("fetch", fetchMock);
     render(<ResultSlip result={bot} index={0} />);
     expect(screen.getByText("changelog: both editors stayed empty")).toBeTruthy();
     expect(screen.queryByText("CurseForge changelog editor did not open. The tab was left open.")).toBeNull();
     expect(screen.queryByRole("link", { name: "View upload" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Create Ticket" })).toBeNull();
+    expect(screen.queryByLabelText("Issue link")).toBeNull();
     await user.click(screen.getByRole("button", { name: "CurseForge failure" }));
     expect(screen.getByRole("button", { name: "CurseForge failure" }).getAttribute("aria-expanded")).toBe("true");
     expect(screen.getByText("Step: changelog")).toBeTruthy();
@@ -438,22 +447,45 @@ describe("Studio", () => {
     expect(screen.getByText("File: README.md.zip")).toBeTruthy();
     expect(screen.getByText("Project ID: 2")).toBeTruthy();
     expect(screen.getByText("custom: kept")).toBeTruthy();
-    await user.click(screen.getByRole("button", { name: "Create Ticket" }));
-    expect(String(open.mock.calls[0]?.[0])).toContain("https://github.com/musical-pig-dev/OmniMod/issues/new");
-    expect(open.mock.calls[0]?.[2]).toBe("noopener");
-    fireEvent.change(screen.getByLabelText("Issue link"), { target: { value: "https://example.com/nope" } });
-    await user.click(screen.getByRole("button", { name: "Save issue link" }));
-    expect(screen.getByRole("button", { name: "Create Ticket" })).toBeTruthy();
-    fireEvent.change(screen.getByLabelText("Issue link"), {
-      target: { value: "  https://github.com/musical-pig-dev/OmniMod/issues/12  " },
+    expect(screen.getByText(/file placed/)).toBeTruthy();
+    expect(screen.getByText("Checking for an open ticket")).toBeTruthy();
+    release({
+      ok: true,
+      json: async () => ({ items: [{ title, html_url: "https://github.com/musical-pig-dev/OmniMod/issues/12" }] }),
     });
+    expect((await screen.findByRole("link", { name: "View Ticket" })).getAttribute("href")).toBe(
+      "https://github.com/musical-pig-dev/OmniMod/issues/12",
+    );
+    expect(screen.queryByRole("button", { name: "Create Ticket" })).toBeNull();
+    const blobUrl = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:omnimod-log");
+    const revoke = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    await user.click(screen.getByRole("button", { name: "Download log" }));
+    expect(blobUrl).toHaveBeenCalled();
+    expect(revoke).toHaveBeenCalledWith("blob:omnimod-log");
+    await user.click(screen.getByRole("button", { name: "CurseForge failure" }));
+    expect(screen.queryByText("Step: changelog")).toBeNull();
+    blobUrl.mockRestore();
+    revoke.mockRestore();
+    cleanup();
+
+    fetchMock.mockImplementation(async () => ({ ok: true, json: async () => ({ items: [] }) }));
+    render(<ResultSlip result={bot} index={0} />);
+    await user.click(screen.getByRole("button", { name: "CurseForge failure" }));
+    await user.click(await screen.findByRole("button", { name: "Create Ticket" }));
+    expect(String(open.mock.calls[0]?.[0])).toContain("https://github.com/musical-pig-dev/OmniMod/issues/new");
+    expect(String(open.mock.calls[0]?.[0])).toContain("OmniMod");
+    expect(open.mock.calls[0]?.[2]).toBe("noopener");
+    const box = screen.getByLabelText("Issue link");
+    await user.type(box, "   ");
+    await user.click(screen.getByRole("button", { name: "Save issue link" }));
+    expect(screen.queryByRole("link", { name: "View Ticket" })).toBeNull();
+    await user.clear(box);
+    await user.type(box, "  https://github.com/musical-pig-dev/OmniMod/issues/12  ");
     await user.click(screen.getByRole("button", { name: "Save issue link" }));
     expect(screen.getByRole("link", { name: "View Ticket" }).getAttribute("href")).toBe(
       "https://github.com/musical-pig-dev/OmniMod/issues/12",
     );
-    expect(screen.queryByRole("button", { name: "Create Ticket" })).toBeNull();
-    await user.click(screen.getByRole("button", { name: "CurseForge failure" }));
-    expect(screen.queryByText("Step: changelog")).toBeNull();
+    expect(screen.queryByLabelText("Issue link")).toBeNull();
     open.mockRestore();
     cleanup();
 
@@ -470,16 +502,7 @@ describe("Studio", () => {
     await user.click(screen.getByRole("button", { name: "Modrinth failure" }));
     expect(screen.queryByText("Filled: file")).toBeNull();
     expect(screen.queryByText(/^File:/)).toBeNull();
-    cleanup();
-
-    const known = failureSignature(bot);
-    localStorage.setItem("omnimod.tickets", JSON.stringify({ [known]: "https://github.com/musical-pig-dev/OmniMod/issues/4" }));
-    render(<ResultSlip result={bot} index={1} />);
-    expect(screen.queryByRole("link", { name: "View Ticket" })).toBeNull();
-    await user.click(screen.getByRole("button", { name: "CurseForge failure" }));
-    expect(screen.getByRole("link", { name: "View Ticket" }).getAttribute("href")).toBe(
-      "https://github.com/musical-pig-dev/OmniMod/issues/4",
-    );
+    expect(await screen.findByRole("button", { name: "Create Ticket" })).toBeTruthy();
     cleanup();
 
     const ghost = {
@@ -493,6 +516,8 @@ describe("Studio", () => {
     await user.click(screen.getByRole("button", { name: "ghost failure" }));
     expect(screen.getByText("anything: v")).toBeTruthy();
     expect(screen.getByText("Unknown host failed.")).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Create Ticket" })).toBeTruthy();
+    vi.unstubAllGlobals();
   });
 
   it("offers a CurseForge override only when that host is ready for the file", async () => {

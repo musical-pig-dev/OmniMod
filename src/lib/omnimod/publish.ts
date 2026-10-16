@@ -32,11 +32,12 @@ export type SiteResult = {
   filled?: string[];
   file?: string;
   config?: Record<string, string>;
+  logs?: string[];
 };
 
 export type TransportResult =
   | { ok: true; detail?: string; url?: string }
-  | { ok: false; message: string; step?: string; reason?: string; filled?: string[] };
+  | { ok: false; message: string; step?: string; reason?: string; filled?: string[]; logs?: string[] };
 
 export type Transport = (
   id: PlatformId,
@@ -97,9 +98,12 @@ export function failureSignature(result: Pick<SiteResult, "id" | "step" | "reaso
   return `${result.id}|${result.step || "host"}|${reason}`;
 }
 
-export function ticketTitle(name: string, result: SiteResult): string {
-  const short = result.step && result.reason ? result.reason : result.message;
-  return `${name}: ${short}`;
+export function ticketTitle(name: string, result: Pick<SiteResult, "id" | "step" | "reason" | "message">): string {
+  const step = (result.step || "host").replace(/\s+/g, " ").trim();
+  const reason = (result.reason || result.message).replace(/\s+/g, " ").trim().slice(0, 80);
+  const lane = PLATFORMS.find((platform) => platform.id === result.id)?.lane;
+  const kind = lane === "bot" ? "bot failed" : "failed";
+  return `OmniMod: ${name} ${kind} — ${step}: ${reason}`;
 }
 
 export function ticketBody(result: SiteResult): string {
@@ -132,6 +136,9 @@ export function ticketBody(result: SiteResult): string {
         : "";
   if (note) lines.push("", "## Notes", "", note);
   if (!result.step && !result.reason) lines.push("", result.message);
+  if (result.logs?.length) {
+    lines.push("", "## Log", "", "```", ...result.logs, "```");
+  }
   return lines.join("\n");
 }
 
@@ -140,31 +147,39 @@ export function ticketHref(title: string, body: string, host: string): string {
   return `https://github.com/musical-pig-dev/OmniMod/issues/new?${params.toString()}`;
 }
 
-const TICKET_KEY = "omnimod.tickets";
+type TicketResponse = { ok: boolean; json: () => Promise<unknown> };
 
-export function loadTickets(storage: Pick<Storage, "getItem"> = localStorage): Record<string, string> {
+/** Public lookup. A matching open issue title is the same bot failure. */
+export async function findOpenTicket(
+  title: string,
+  fetchImpl: (url: string, init?: { headers?: Record<string, string> }) => Promise<TicketResponse> = fetch,
+): Promise<string | null> {
+  const query = `repo:musical-pig-dev/OmniMod is:issue is:open in:title:"${title.replaceAll('"', "")}"`;
+  let response: TicketResponse;
   try {
-    const raw = storage.getItem(TICKET_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    const saved: Record<string, string> = {};
-    for (const [key, value] of Object.entries(parsed)) {
-      if (typeof value === "string" && value.startsWith("https://github.com/")) saved[key] = value;
-    }
-    return saved;
+    response = await fetchImpl(`https://api.github.com/search/issues?per_page=10&q=${encodeURIComponent(query)}`, {
+      headers: { Accept: "application/vnd.github+json" },
+    });
   } catch {
-    return {};
+    return null;
   }
-}
-
-export function saveTicket(
-  signature: string,
-  url: string,
-  storage: Pick<Storage, "getItem" | "setItem"> = localStorage,
-): void {
-  const next = { ...loadTickets(storage), [signature]: url };
-  storage.setItem(TICKET_KEY, JSON.stringify(next));
+  if (!response.ok) return null;
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    return null;
+  }
+  const items = body && typeof body === "object" && "items" in body ? (body as { items: unknown }).items : null;
+  if (!Array.isArray(items)) return null;
+  for (const item of items) {
+    if (!item || typeof item !== "object") continue;
+    const row = item as { title?: unknown; html_url?: unknown };
+    if (row.title === title && typeof row.html_url === "string" && row.html_url.startsWith("https://github.com/")) {
+      return row.html_url;
+    }
+  }
+  return null;
 }
 
 function successMessage(id: PlatformId, input: PublishInput): string {
@@ -268,6 +283,7 @@ export async function runPublish(args: {
           ...(response.step ? { step: response.step } : {}),
           ...(response.reason ? { reason: response.reason } : {}),
           ...(response.filled && response.filled.length > 0 ? { filled: response.filled } : {}),
+          ...(response.logs && response.logs.length > 0 ? { logs: response.logs } : {}),
           ...failureFacts(entry.id, args.input, args.configs),
         });
       }
@@ -278,6 +294,9 @@ export async function runPublish(args: {
         id: entry.id,
         status: "error",
         message: `${name}: ${detail}`,
+        step: "exception",
+        reason: detail,
+        logs: [`exception: ${detail}`],
         ...failureFacts(entry.id, args.input, args.configs),
       });
     }
@@ -563,7 +582,7 @@ export type CurseFormFill = CurseFormValues & {
 
 export type CurseFillResult =
   | { ok: true; url: string }
-  | { ok: false; message: string; step?: string; reason?: string; filled?: string[] };
+  | { ok: false; message: string; step?: string; reason?: string; filled?: string[]; logs?: string[] };
 
 const CURSE_AUTO = "Publish this file automatically once approved";
 const CURSE_MANUAL = "I would like to publish this file manually once approved";
@@ -586,7 +605,7 @@ export function curseForgeFormValues(args: {
     manual: prefer(over.publishWhen, host.publishWhen, curseDefault("publishWhen")) === "manual",
     versions: commaList(prefer(over.gameVersions, host.gameVersions)),
     releaseType: releaseKey === "beta" ? "Beta" : releaseKey === "alpha" ? "Alpha" : "Release",
-    code: changelogKey === "text" || changelogKey === "markdown",
+    code: changelogKey === "markdown",
     relations,
     changelog: args.changelog.trim(),
   };
@@ -787,9 +806,15 @@ export async function fillCurseForgePage(fill: CurseFormFill): Promise<CurseFill
   }
 
   const filled: string[] = [];
+  const logs: string[] = [];
+
+  function note(action: string): void {
+    logs.push(action);
+  }
 
   function miss(step: string, reason: string, message: string): CurseFillResult {
-    return { ok: false, message, step, reason, ...(filled.length > 0 ? { filled: filled.slice() } : {}) };
+    note(`stop ${step}: ${reason}`);
+    return { ok: false, message, step, reason, logs: logs.slice(), ...(filled.length > 0 ? { filled: filled.slice() } : {}) };
   }
 
   function concealed(node: Element): boolean {
@@ -801,6 +826,7 @@ export async function fillCurseForgePage(fill: CurseFormFill): Promise<CurseFill
     return false;
   }
 
+  try {
   let fileInput: HTMLInputElement | null = null;
   const ready = await waitFor(() => {
     if (isLogin()) return true;
@@ -817,6 +843,7 @@ export async function fillCurseForgePage(fill: CurseFormFill): Promise<CurseFill
         : "CurseForge needs a sign-in. The form tab was left open.",
     );
   }
+  note("form ready");
   if (fill.fileName && !fill.fileName.endsWith(".zip")) {
     return miss("file", "form accepts .zip only", "CurseForge form accepts .zip only. The tab was left open.");
   }
@@ -826,6 +853,7 @@ export async function fillCurseForgePage(fill: CurseFormFill): Promise<CurseFill
 
   placeFile(fileInput as HTMLInputElement, new File([new Uint8Array(fill.bytes)], fill.fileName ? fill.fileName : "package", { type: fill.mime }));
   filled.push("file");
+  note("file placed");
 
   if (waitMs > 0) {
     const copyUntil = Date.now() + Math.min(waitMs, 400);
@@ -837,14 +865,17 @@ export async function fillCurseForgePage(fill: CurseFormFill): Promise<CurseFill
     if (!box) return miss("display name", "no display name field", "CurseForge form has no display name field. The tab was left open.");
     writeControl(box, fill.displayName);
     filled.push("display name");
+    note("display name written");
   }
 
   const choice = radioNamed(fill.manual ? CURSE_MANUAL : CURSE_AUTO);
   if (!choice) return miss("release", "no release option", "CurseForge form has no release option. The tab was left open.");
   choice.click();
   filled.push("release");
+  note("release chosen");
 
   for (const version of fill.versions) {
+    note(`minecraft ${version}`);
     const section = heading("Minecraft") as Element;
     const scope = scopeOf(section);
     const wanted = version.toLowerCase();
@@ -896,6 +927,7 @@ export async function fillCurseForgePage(fill: CurseFormFill): Promise<CurseFill
     }
   }
   filled.push("release type");
+  note(`release type ${fill.releaseType}`);
 
   if (fill.changelog) {
     let wrote = false;
@@ -921,6 +953,13 @@ export async function fillCurseForgePage(fill: CurseFormFill): Promise<CurseFill
           wrote = fallback.value === fill.changelog;
         }
       }
+      if (!wrote && marked instanceof HTMLTextAreaElement) {
+        return miss(
+          "changelog",
+          concealed(marked) ? "markdown editor stayed hidden" : "markdown editor did not keep the text",
+          "CurseForge changelog stayed on WYSIWYG. The tab was left open.",
+        );
+      }
     } else {
       await pickMode("wysiwyg");
       const editor = doc.querySelector("[contenteditable='true']");
@@ -935,6 +974,7 @@ export async function fillCurseForgePage(fill: CurseFormFill): Promise<CurseFill
       return miss("changelog", "both editors stayed empty", "CurseForge changelog editor did not open. The tab was left open.");
     }
     filled.push("changelog");
+    note(fill.code ? "changelog written as markdown" : "changelog written as wysiwyg");
   }
 
   for (const relation of fill.relations) {
@@ -949,12 +989,14 @@ export async function fillCurseForgePage(fill: CurseFormFill): Promise<CurseFill
     const confirm = buttonNamed("Add to relations");
     if (!confirm) return miss("relations", "did not offer Add to relations", "CurseForge did not offer Add to relations. The tab was left open.");
     confirm.click();
+    note(`relation ${relation}`);
   }
   if (fill.relations.length > 0) filled.push("relations");
 
   const submit = buttonNamed("Add File");
   if (!submit) return miss("submit", "no Add File button", "CurseForge form has no Add File button. The tab was left open.");
   const before = hrefOf();
+  note("submit clicked");
   submit.click();
 
   const started = Date.now();
@@ -977,4 +1019,16 @@ export async function fillCurseForgePage(fill: CurseFormFill): Promise<CurseFill
     await delay(stepMs);
   }
   return miss("submit", "upload did not finish", "CurseForge did not finish the upload. The tab was left open.");
+  } catch (error) {
+    const detail = error instanceof Error && error.message ? `${error.name}: ${error.message}` : "The form script threw.";
+    logs.push(`exception: ${detail}`);
+    return {
+      ok: false,
+      message: `CurseForge form stopped. ${detail} The tab was left open.`,
+      step: "exception",
+      reason: detail,
+      logs: logs.slice(),
+      ...(filled.length > 0 ? { filled: filled.slice() } : {}),
+    };
+  }
 }
