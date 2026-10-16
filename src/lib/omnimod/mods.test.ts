@@ -137,6 +137,7 @@ describe("mods", () => {
     assert.equal(nextFreeVersion("0.1.0", ["v0.1.0"]), "0.1.1");
     assert.equal(nextFreeVersion("0.1.0", ["refs/tags/v0.1.0"]), "0.1.1");
     assert.equal(nextFreeVersion("0.1.0", ["v0.1.0", "0.1.1"]), "0.1.2");
+    assert.equal(nextFreeVersion("0.1.10", ["v0.1.10", "v0.1.11", "v0.1.12"]), "0.1.13");
     assert.equal(nextFreeVersion("beta", ["beta"]), "");
   });
 
