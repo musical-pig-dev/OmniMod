@@ -640,6 +640,30 @@ describe("curseforge form tab", () => {
     chrome.scripting.executeScript = async () => [{ result: { ok: false, message: "CurseForge form did not load. The tab was left open." } }];
     const failed = await transport("curseforge", input({ projectId: "1744552", gameVersions: "26.3" }));
     assert.match(failed.ok ? "" : failed.message, /did not load/);
+    assert.equal(failed.ok ? "" : failed.step, undefined);
+
+    chrome.scripting.executeScript = async () => [
+      {
+        result: {
+          ok: false,
+          message: "CurseForge changelog editor did not open. The tab was left open.",
+          step: "changelog",
+          reason: "both editors stayed empty",
+          filled: ["file"],
+        },
+      },
+    ];
+    const detailed = await transport("curseforge", input({ projectId: "1744552", gameVersions: "26.3" }));
+    assert.equal(detailed.ok, false);
+    if (!detailed.ok) {
+      assert.equal(detailed.step, "changelog");
+      assert.equal(detailed.reason, "both editors stayed empty");
+      assert.deepEqual(detailed.filled, ["file"]);
+    }
+    chrome.scripting.executeScript = async () => [{ result: { ok: false, message: "CurseForge form could not be filled. The tab was left open.", filled: [] } }];
+    const emptyFilled = await transport("curseforge", input({ projectId: "1744552", gameVersions: "26.3" }));
+    assert.equal(emptyFilled.ok, false);
+    if (!emptyFilled.ok) assert.equal(emptyFilled.filled, undefined);
 
     chrome.scripting.executeScript = async () => [{}];
     assert.match(

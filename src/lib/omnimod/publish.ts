@@ -27,9 +27,16 @@ export type SiteResult = {
   status: SiteStatus;
   message: string;
   url?: string;
+  step?: string;
+  reason?: string;
+  filled?: string[];
+  file?: string;
+  config?: Record<string, string>;
 };
 
-export type TransportResult = { ok: true; detail?: string; url?: string } | { ok: false; message: string };
+export type TransportResult =
+  | { ok: true; detail?: string; url?: string }
+  | { ok: false; message: string; step?: string; reason?: string; filled?: string[] };
 
 export type Transport = (
   id: PlatformId,
@@ -71,6 +78,95 @@ function skipMessage(entry: Extract<PlanEntry, { action: "skip" }>, name: string
   return `${name} needs account details. Left alone.`;
 }
 
+export function publicHostConfig(
+  id: PlatformId,
+  fields: Record<string, string> | undefined,
+): Record<string, string> | undefined {
+  if (!fields) return undefined;
+  const secrets = new Set(platformById(id).fields.filter((field) => field.secret).map((field) => field.key));
+  const config: Record<string, string> = {};
+  for (const [key, value] of Object.entries(fields)) {
+    if (!value.trim() || secrets.has(key) || /token|key|secret|password|cookie/i.test(key)) continue;
+    config[key] = value;
+  }
+  return Object.keys(config).length ? config : undefined;
+}
+
+export function failureSignature(result: Pick<SiteResult, "id" | "step" | "reason" | "message">): string {
+  const reason = (result.reason || result.message).replace(/\s+/g, " ").trim().toLowerCase();
+  return `${result.id}|${result.step || "host"}|${reason}`;
+}
+
+export function ticketTitle(name: string, result: SiteResult): string {
+  const short = result.step && result.reason ? result.reason : result.message;
+  return `${name}: ${short}`;
+}
+
+export function ticketBody(result: SiteResult): string {
+  const platform = platformById(result.id);
+  const lines = [
+    "## Failure",
+    "",
+    `- **Host:** ${platform.name}`,
+    `- **Lane:** ${platform.lane}`,
+    ...(result.step ? [`- **Step:** ${result.step}`] : []),
+    ...(result.reason ? [`- **Reason:** ${result.reason}`] : []),
+    ...(result.file ? [`- **File:** ${result.file}`] : []),
+    `- **Time:** ${new Date().toISOString()}`,
+  ];
+  if (result.filled?.length) {
+    lines.push("", "## Filled", "", ...result.filled.map((item) => `- ${item}`));
+  }
+  if (result.config && Object.keys(result.config).length) {
+    lines.push("", "## Config", "");
+    for (const [key, value] of Object.entries(result.config)) {
+      const label = platform.fields.find((field) => field.key === key)?.label ?? key;
+      lines.push(`- ${label}: ${value}`);
+    }
+  }
+  const note =
+    platform.lane === "bot"
+      ? "The tab was left open. Partial fill is visible on the form."
+      : platform.lane === "later"
+        ? "This host is not implemented yet."
+        : "";
+  if (note) lines.push("", "## Notes", "", note);
+  if (!result.step && !result.reason) lines.push("", result.message);
+  return lines.join("\n");
+}
+
+export function ticketHref(title: string, body: string, host: string): string {
+  const params = new URLSearchParams({ title, body, labels: `bug,form-filler,${host}` });
+  return `https://github.com/musical-pig-dev/OmniMod/issues/new?${params.toString()}`;
+}
+
+const TICKET_KEY = "omnimod.tickets";
+
+export function loadTickets(storage: Pick<Storage, "getItem"> = localStorage): Record<string, string> {
+  try {
+    const raw = storage.getItem(TICKET_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const saved: Record<string, string> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (typeof value === "string" && value.startsWith("https://github.com/")) saved[key] = value;
+    }
+    return saved;
+  } catch {
+    return {};
+  }
+}
+
+export function saveTicket(
+  signature: string,
+  url: string,
+  storage: Pick<Storage, "getItem" | "setItem"> = localStorage,
+): void {
+  const next = { ...loadTickets(storage), [signature]: url };
+  storage.setItem(TICKET_KEY, JSON.stringify(next));
+}
+
 function successMessage(id: PlatformId, input: PublishInput): string {
   const name = platformById(id).name;
   const version = input.version.trim() || "unversioned";
@@ -99,11 +195,20 @@ export function deliveryFile(
   if (!input.autoZip || sources.length === 0) return file;
   const accepts = platformById(id).accepts;
   const first = sources[0];
+  if (id === "curseforge" && fileExtension(first.name) !== ".zip") return preferZip(zip, file);
   if (sources.length > 1 && hostTakesOne(id)) return preferZip(zip, file);
   const ext = fileExtension(first.name);
   if (!accepts || accepts.includes(ext)) return first.blob;
   if (accepts.includes(".zip")) return preferZip(zip, file);
   return file;
+}
+
+export function failureFacts(id: PlatformId, input: PublishInput, configs: ConfigMap) {
+  const config = publicHostConfig(id, configs[id]?.fields);
+  return {
+    ...(input.fileName.trim() ? { file: input.fileName } : {}),
+    ...(config ? { config } : {}),
+  };
 }
 
 export async function runPublish(args: {
@@ -160,6 +265,10 @@ export async function runPublish(args: {
           id: entry.id,
           status: "error",
           message: response.message || `${name} rejected the upload.`,
+          ...(response.step ? { step: response.step } : {}),
+          ...(response.reason ? { reason: response.reason } : {}),
+          ...(response.filled && response.filled.length > 0 ? { filled: response.filled } : {}),
+          ...failureFacts(entry.id, args.input, args.configs),
         });
       }
     } catch (error) {
@@ -169,6 +278,7 @@ export async function runPublish(args: {
         id: entry.id,
         status: "error",
         message: `${name}: ${detail}`,
+        ...failureFacts(entry.id, args.input, args.configs),
       });
     }
     completed += 1;
@@ -451,7 +561,9 @@ export type CurseFormFill = CurseFormValues & {
   stepMs: number;
 };
 
-export type CurseFillResult = { ok: true; url: string } | { ok: false; message: string };
+export type CurseFillResult =
+  | { ok: true; url: string }
+  | { ok: false; message: string; step?: string; reason?: string; filled?: string[] };
 
 const CURSE_AUTO = "Publish this file automatically once approved";
 const CURSE_MANUAL = "I would like to publish this file manually once approved";
@@ -580,9 +692,15 @@ export async function fillCurseForgePage(fill: CurseFormFill): Promise<CurseFill
   }
 
   function modeCombobox(): HTMLElement | null {
-    for (const node of doc.querySelectorAll("[role='combobox']")) {
-      const text = plain(node).toLowerCase();
-      if (text === "wysiwyg" || text === "markdown") return node as HTMLElement;
+    const scopes: ParentNode[] = [];
+    const label = heading("Changelog");
+    if (label) scopes.push(scopeOf(label));
+    scopes.push(doc);
+    for (const scope of scopes) {
+      for (const node of scope.querySelectorAll("[role='combobox']")) {
+        const text = plain(node).toLowerCase();
+        if (text === "wysiwyg" || text === "markdown") return node as HTMLElement;
+      }
     }
     return null;
   }
@@ -622,7 +740,8 @@ export async function fillCurseForgePage(fill: CurseFormFill): Promise<CurseFill
       }
       return false;
     });
-    if (picked) picked.click();
+    if (!picked) return false;
+    picked.click();
     return true;
   }
 
@@ -667,6 +786,21 @@ export async function fillCurseForgePage(fill: CurseFormFill): Promise<CurseFill
     return found;
   }
 
+  const filled: string[] = [];
+
+  function miss(step: string, reason: string, message: string): CurseFillResult {
+    return { ok: false, message, step, reason, ...(filled.length > 0 ? { filled: filled.slice() } : {}) };
+  }
+
+  function concealed(node: Element): boolean {
+    let current: Element | null = node;
+    while (current && current !== doc.body) {
+      if ((current as HTMLElement).style.display === "none") return true;
+      current = current.parentElement;
+    }
+    return false;
+  }
+
   let fileInput: HTMLInputElement | null = null;
   const ready = await waitFor(() => {
     if (isLogin()) return true;
@@ -675,18 +809,23 @@ export async function fillCurseForgePage(fill: CurseFormFill): Promise<CurseFill
     return fileInput != null || isLogin();
   });
   if (!ready || isLogin()) {
-    return {
-      ok: false,
-      message: !ready
+    return miss(
+      "form",
+      !ready ? "form did not load" : "needs a sign-in",
+      !ready
         ? "CurseForge form did not load. The tab was left open."
         : "CurseForge needs a sign-in. The form tab was left open.",
-    };
+    );
+  }
+  if (fill.fileName && !fill.fileName.endsWith(".zip")) {
+    return miss("file", "form accepts .zip only", "CurseForge form accepts .zip only. The tab was left open.");
   }
   if (fill.versions.length === 0) {
-    return { ok: false, message: "CurseForge needs a game version on the host key." };
+    return miss("versions", "needs a game version", "CurseForge needs a game version on the host key.");
   }
 
   placeFile(fileInput as HTMLInputElement, new File([new Uint8Array(fill.bytes)], fill.fileName ? fill.fileName : "package", { type: fill.mime }));
+  filled.push("file");
 
   if (waitMs > 0) {
     const copyUntil = Date.now() + Math.min(waitMs, 400);
@@ -695,13 +834,15 @@ export async function fillCurseForgePage(fill: CurseFormFill): Promise<CurseFill
 
   if (fill.displayName) {
     const box = fieldInput("Display name");
-    if (!box) return { ok: false, message: "CurseForge form has no display name field. The tab was left open." };
+    if (!box) return miss("display name", "no display name field", "CurseForge form has no display name field. The tab was left open.");
     writeControl(box, fill.displayName);
+    filled.push("display name");
   }
 
   const choice = radioNamed(fill.manual ? CURSE_MANUAL : CURSE_AUTO);
-  if (!choice) return { ok: false, message: "CurseForge form has no release option. The tab was left open." };
+  if (!choice) return miss("release", "no release option", "CurseForge form has no release option. The tab was left open.");
   choice.click();
+  filled.push("release");
 
   for (const version of fill.versions) {
     const section = heading("Minecraft") as Element;
@@ -722,17 +863,18 @@ export async function fillCurseForgePage(fill: CurseFormFill): Promise<CurseFill
       return option instanceof HTMLElement;
     });
     if (!(option instanceof HTMLElement)) {
-      return { ok: false, message: `CurseForge has no Minecraft version ${version}. The tab was left open.` };
+      return miss("minecraft", `no Minecraft version ${version}`, `CurseForge has no Minecraft version ${version}. The tab was left open.`);
     }
     option.click();
   }
+  filled.push("minecraft");
 
   const releaseLabel = heading("Release Type") as Element;
   const releaseScope = scopeOf(releaseLabel);
   const releaseSelect = releaseScope.querySelector("select");
   if (releaseSelect instanceof HTMLSelectElement) {
     const option = [...releaseSelect.options].find((item) => plain(item).toLowerCase() === fill.releaseType.toLowerCase());
-    if (!option) return { ok: false, message: `CurseForge has no release type ${fill.releaseType}. The tab was left open.` };
+    if (!option) return miss("release type", `no release type ${fill.releaseType}`, `CurseForge has no release type ${fill.releaseType}. The tab was left open.`);
     releaseSelect.value = option.value;
     releaseSelect.dispatchEvent(new Event("change", { bubbles: true }));
   } else {
@@ -748,25 +890,37 @@ export async function fillCurseForgePage(fill: CurseFormFill): Promise<CurseFill
         return option instanceof HTMLElement;
       });
       if (!(option instanceof HTMLElement)) {
-        return { ok: false, message: "CurseForge form has no release type. The tab was left open." };
+        return miss("release type", "no release type", "CurseForge form has no release type. The tab was left open.");
       }
       option.click();
     }
   }
+  filled.push("release type");
 
   if (fill.changelog) {
+    let wrote = false;
     if (fill.code) {
       const switched = await pickMode("markdown");
       if (!switched) {
         const codeButton = buttonNamed("</>") ?? buttonNamed("code");
         if (codeButton) codeButton.click();
+      } else {
+        await waitFor(() => {
+          const node = doc.querySelector("textarea.mde-text");
+          return node instanceof HTMLTextAreaElement && !concealed(node);
+        });
       }
       const marked = doc.querySelector("textarea.mde-text");
-      const area = marked instanceof HTMLTextAreaElement ? marked : doc.querySelector("textarea:not([aria-hidden='true'])");
-      if (!(area instanceof HTMLTextAreaElement)) {
-        return { ok: false, message: "CurseForge changelog editor did not open. The tab was left open." };
+      if (marked instanceof HTMLTextAreaElement && !concealed(marked)) {
+        writeControl(marked, fill.changelog);
+        wrote = marked.value === fill.changelog;
+      } else if (!(marked instanceof HTMLTextAreaElement)) {
+        const fallback = doc.querySelector("textarea:not([aria-hidden='true'])");
+        if (fallback instanceof HTMLTextAreaElement) {
+          writeControl(fallback, fill.changelog);
+          wrote = fallback.value === fill.changelog;
+        }
       }
-      writeControl(area, fill.changelog);
     } else {
       await pickMode("wysiwyg");
       const editor = doc.querySelector("[contenteditable='true']");
@@ -774,28 +928,32 @@ export async function fillCurseForgePage(fill: CurseFormFill): Promise<CurseFill
         if (/<[a-z][\s\S]*>/i.test(fill.changelog)) editor.innerHTML = fill.changelog;
         else editor.textContent = fill.changelog;
         editor.dispatchEvent(new Event("input", { bubbles: true }));
-      } else if (!writeTiny(fill.changelog)) {
-        return { ok: false, message: "CurseForge changelog editor did not open. The tab was left open." };
+        wrote = true;
       }
     }
+    if (!wrote && !writeTiny(fill.changelog)) {
+      return miss("changelog", "both editors stayed empty", "CurseForge changelog editor did not open. The tab was left open.");
+    }
+    filled.push("changelog");
   }
 
   for (const relation of fill.relations) {
     const add = buttonNamed("Add related project");
-    if (!add) return { ok: false, message: "CurseForge form has no related projects. The tab was left open." };
+    if (!add) return miss("relations", "no related projects", "CurseForge form has no related projects. The tab was left open.");
     add.click();
     const search = doc.querySelector("[role='dialog'] input, dialog input");
     if (!(search instanceof HTMLInputElement)) {
-      return { ok: false, message: "CurseForge relation search did not open. The tab was left open." };
+      return miss("relations", "relation search did not open", "CurseForge relation search did not open. The tab was left open.");
     }
     writeControl(search, relation);
     const confirm = buttonNamed("Add to relations");
-    if (!confirm) return { ok: false, message: "CurseForge did not offer Add to relations. The tab was left open." };
+    if (!confirm) return miss("relations", "did not offer Add to relations", "CurseForge did not offer Add to relations. The tab was left open.");
     confirm.click();
   }
+  if (fill.relations.length > 0) filled.push("relations");
 
   const submit = buttonNamed("Add File");
-  if (!submit) return { ok: false, message: "CurseForge form has no Add File button. The tab was left open." };
+  if (!submit) return miss("submit", "no Add File button", "CurseForge form has no Add File button. The tab was left open.");
   const before = hrefOf();
   submit.click();
 
@@ -814,9 +972,9 @@ export async function fillCurseForgePage(fill: CurseFormFill): Promise<CurseFill
     }
     const alert = doc.querySelector("[role='alert']");
     const alertText = alert ? plain(alert) : "";
-    if (alertText && !/copied from the file/i.test(alertText)) return { ok: false, message: alertText };
+    if (alertText && !/copied from the file/i.test(alertText)) return miss("submit", alertText, alertText);
     if (waitMs < 1 || Date.now() - started >= waitMs) break;
     await delay(stepMs);
   }
-  return { ok: false, message: "CurseForge did not finish the upload. The tab was left open." };
+  return miss("submit", "upload did not finish", "CurseForge did not finish the upload. The tab was left open.");
 }

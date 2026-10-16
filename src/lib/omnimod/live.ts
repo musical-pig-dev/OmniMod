@@ -393,7 +393,15 @@ async function publishCurseForge(
   } catch {
     return { ok: false, message: "CurseForge form could not be filled. The tab was left open." };
   }
-  if (!result.ok) return { ok: false, message: result.message };
+  if (!result.ok) {
+    return {
+      ok: false,
+      message: result.message,
+      ...(result.step ? { step: result.step } : {}),
+      ...(result.reason ? { reason: result.reason } : {}),
+      ...(result.filled && result.filled.length > 0 ? { filled: result.filled } : {}),
+    };
+  }
   const view = result.url.trim();
   if (!view) return { ok: false, message: "CurseForge did not show the uploaded file. The tab was left open." };
   try {

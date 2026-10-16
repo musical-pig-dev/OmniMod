@@ -20,7 +20,14 @@ export function RevisionLink({
   );
   return (
     <div className="fixed right-3 bottom-3 z-20 flex items-center gap-3">
-      <p className="text-xs text-mist">© 2026 Musical Pig LLC</p>
+      <a
+        href="https://www.musical-pig.com"
+        target="_blank"
+        rel="noreferrer"
+        className="text-xs text-mist"
+      >
+        © 2026 Musical Pig LLC
+      </a>
       {hash}
     </div>
   );

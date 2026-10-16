@@ -9,14 +9,23 @@ import {
   curseForgeViewUrl,
   curseVersionCatalog,
   deliveryFile,
+  failureFacts,
+  failureSignature,
   fillCurseForgePage,
+  loadTickets,
   planPublish,
   practiceFields,
   practiceValue,
+  publicHostConfig,
   readyCount,
   resolveCurseVersionIds,
   runPublish,
+  saveTicket,
+  ticketBody,
+  ticketHref,
+  ticketTitle,
   type PublishInput,
+  type SiteResult,
   type Transport,
 } from "./publish.ts";
 
@@ -188,7 +197,35 @@ describe("runPublish", () => {
     const results = await runPublish({ input, configs, transport });
     assert.equal(results.find((result) => result.id === "nexus")?.status, "error");
     assert.match(results.find((result) => result.id === "nexus")!.message, /401/);
+    assert.equal(results.find((result) => result.id === "nexus")?.file, "lanterns.zip");
+    assert.equal(results.find((result) => result.id === "nexus")?.config?.apiKey, undefined);
     assert.equal(results.find((result) => result.id === "thunderstore")?.status, "success");
+  });
+
+  it("keeps the failing step when the host names it", async () => {
+    const results = await runPublish({
+      input,
+      configs: withReady(["curseforge"]),
+      transport: async () => ({
+        ok: false,
+        message: "CurseForge changelog editor did not open. The tab was left open.",
+        step: "changelog",
+        reason: "both editors stayed empty",
+        filled: ["file", "display name"],
+      }),
+    });
+    const curse = results.find((result) => result.id === "curseforge");
+    assert.equal(curse?.step, "changelog");
+    assert.equal(curse?.reason, "both editors stayed empty");
+    assert.deepEqual(curse?.filled, ["file", "display name"]);
+    assert.equal(curse?.config?.projectId, "2");
+    assert.equal(JSON.stringify(curse).includes("token"), false);
+    const blankFilled = await runPublish({
+      input,
+      configs: withReady(["nexus"]),
+      transport: async () => ({ ok: false, message: "no", filled: [] }),
+    });
+    assert.equal(blankFilled.find((result) => result.id === "nexus")?.filled, undefined);
   });
 
   it("notes a missing changelog on success", async () => {
@@ -207,6 +244,8 @@ describe("runPublish", () => {
       transport: async () => ({ ok: false, message: "" }),
     });
     assert.match(results.find((result) => result.id === "github")!.message, /rejected/i);
+    assert.equal(results.find((result) => result.id === "github")?.file, "lanterns.zip");
+    assert.deepEqual(results.find((result) => result.id === "github")?.config, { repo: "a/b" });
   });
 
   it("labels a non-Error throw", async () => {
@@ -313,6 +352,9 @@ describe("runPublish", () => {
       ]),
       jar,
     );
+    assert.equal(deliveryFile("curseforge", base, original, packed, [{ name: "mod.jar", blob: jar }]), packed);
+    assert.equal(deliveryFile("curseforge", base, original, null, [{ name: "mod.jar", blob: jar }]), original);
+    assert.equal(deliveryFile("curseforge", base, original, packed, [{ name: "mod.zip", blob: jar }]), jar);
     const seen: Partial<Record<PlatformId, Blob | null>> = {};
     const zipped = planPublish(withReady(["nexus"]), { ...base, fileName: "mod.jar" });
     assert.equal(zipped.find((entry) => entry.id === "nexus")?.action, "publish");
@@ -1010,5 +1052,176 @@ describe("curseForge authors form", () => {
     const closed = await fillCurseForgePage(fill);
     assert.match(closed.ok ? "" : closed.message, /changelog/);
     delete win.tinymce;
+  });
+
+  it("stops on a jar and writes a hidden markdown box through the other editor", async () => {
+    mount(`${form}<a href="https://authors.curseforge.com/#/projects/1/files/2">file</a>`);
+    const refused = await fillCurseForgePage({ ...fill, fileName: "test-mod.jar" });
+    assert.equal(refused.ok, false);
+    if (!refused.ok) {
+      assert.equal(refused.step, "file");
+      assert.equal(refused.reason, "form accepts .zip only");
+      assert.match(refused.message, /form accepts \.zip only/);
+      assert.equal(refused.filled, undefined);
+    }
+    assert.equal((document.querySelector("#name") as HTMLInputElement).value, "");
+
+    mount(`
+      <input type="file" />
+      <label>Display name <input id="name" /></label>
+      <label><input type="radio" /> Publish this file automatically once approved</label>
+      <span>Minecraft *</span>
+      <button type="button" role="option">26.3</button>
+      <span>Release Type</span>
+      <button type="button" role="option">Release</button>
+      <div role="combobox">WYSIWYG</div>
+      <div role="option">Markdown</div>
+      <div style="display: none"><textarea class="mde-text" id="md"></textarea></div>
+      <iframe class="tox-edit-area__iframe" srcdoc="<html><body></body></html>"></iframe>
+      <button type="button">Add File</button>
+      <a href="https://authors.curseforge.com/#/projects/1/files/40">file</a>
+    `);
+    const frame = document.querySelector("iframe") as HTMLIFrameElement;
+    const hidden = await fillCurseForgePage({ ...fill, code: true, changelog: "from tiny", relations: [] });
+    assert.equal(hidden.ok, true);
+    assert.equal((document.querySelector("#md") as HTMLTextAreaElement).value, "");
+    assert.equal(frame.contentDocument?.body.textContent, "from tiny");
+
+    mount(`
+      <input type="file" />
+      <label>Display name <input id="name" /></label>
+      <label><input type="radio" /> Publish this file automatically once approved</label>
+      <span>Minecraft *</span>
+      <button type="button" role="option">26.3</button>
+      <div class="MuiFormControl-root"><span>Release Type</span><div role="combobox">Release</div></div>
+      <div role="combobox" id="decoy">WYSIWYG</div>
+      <div class="MuiFormControl-root"><span>Changelog</span><div role="combobox" id="log">Markdown</div></div>
+      <textarea class="mde-text" id="md"></textarea>
+      <button type="button">Add File</button>
+      <a href="https://authors.curseforge.com/#/projects/1/files/41">file</a>
+    `);
+    let clicked = "";
+    document.querySelectorAll("[role='combobox']").forEach((node) => {
+      node.addEventListener("click", () => {
+        clicked = node.textContent ?? "";
+      });
+    });
+    const scoped = await fillCurseForgePage({ ...fill, code: true, changelog: "scoped", relations: [] });
+    assert.equal(scoped.ok, true);
+    assert.equal(clicked, "");
+    assert.equal((document.querySelector("#md") as HTMLTextAreaElement).value, "scoped");
+
+    mount(`
+      <input type="file" />
+      <label>Display name <input id="name" /></label>
+      <label><input type="radio" /> Publish this file automatically once approved</label>
+      <span>Minecraft *</span>
+      <button type="button" role="option">26.3</button>
+      <span>Release Type</span>
+      <button type="button" role="option">Release</button>
+      <div role="combobox">WYSIWYG</div>
+      <div role="option">Markdown</div>
+      <textarea class="mde-text" id="stuck"></textarea>
+      <iframe class="tox-edit-area__iframe" srcdoc="<html><body></body></html>"></iframe>
+      <button type="button">Add File</button>
+      <a href="https://authors.curseforge.com/#/projects/1/files/42">file</a>
+    `);
+    const stuck = document.querySelector("#stuck") as HTMLTextAreaElement;
+    Object.defineProperty(stuck, "value", { configurable: true, get: () => "", set: () => {} });
+    const stuckFrame = document.querySelector("iframe") as HTMLIFrameElement;
+    const recovered = await fillCurseForgePage({ ...fill, code: true, changelog: "recovered", relations: [] });
+    assert.equal(recovered.ok, true);
+    assert.equal(stuckFrame.contentDocument?.body.textContent, "recovered");
+  });
+});
+
+describe("failure report", () => {
+  it("strips secrets and builds a ticket from the public facts", () => {
+    assert.equal(publicHostConfig("nexus", undefined), undefined);
+    assert.equal(publicHostConfig("nexus", {}), undefined);
+    assert.equal(publicHostConfig("curseforge", { projectId: "  " }), undefined);
+    assert.deepEqual(
+      publicHostConfig("curseforge", { projectId: "9", password: "p", cookie: "c", secretNote: "s", myKey: "k" }),
+      { projectId: "9" },
+    );
+    const configs = defaultConfigs();
+    configs.nexus.fields = { apiKey: "secret-key", gameDomain: "site", modId: "1", token: "nope" };
+    assert.deepEqual(failureFacts("nexus", input, configs), {
+      file: "lanterns.zip",
+      config: { gameDomain: "site", modId: "1" },
+    });
+    configs.github.fields = { token: "t" };
+    assert.deepEqual(failureFacts("github", { ...input, fileName: "" }, configs), {});
+    configs.curseforge.fields = { projectId: "2" };
+    assert.deepEqual(failureFacts("curseforge", { ...input, fileName: "  " }, configs), {
+      config: { projectId: "2" },
+    });
+
+    const bot: SiteResult = {
+      id: "curseforge",
+      status: "error",
+      message: "CurseForge changelog editor did not open. The tab was left open.",
+      step: "changelog",
+      reason: "Both  Editors",
+      file: "README.md.zip",
+      filled: ["file"],
+      config: { projectId: "2", custom: "x" },
+    };
+    assert.equal(failureSignature(bot), "curseforge|changelog|both editors");
+    assert.equal(failureSignature({ id: "nexus", message: "Host down" }), "nexus|host|host down");
+    assert.equal(ticketTitle("CurseForge", bot), "CurseForge: Both  Editors");
+    assert.equal(ticketTitle("Nexus Mods", { id: "nexus", status: "error", message: "Host down", step: "upload" }), "Nexus Mods: Host down");
+    const body = ticketBody(bot);
+    assert.match(body, /\*\*Host:\*\* CurseForge/);
+    assert.match(body, /\*\*Lane:\*\* bot/);
+    assert.match(body, /\*\*Step:\*\* changelog/);
+    assert.match(body, /\*\*File:\*\* README.md.zip/);
+    assert.match(body, /## Filled/);
+    assert.match(body, /Project ID: 2/);
+    assert.match(body, /custom: x/);
+    assert.match(body, /The tab was left open/);
+    assert.match(body, /\*\*Time:\*\* \d{4}-/);
+    assert.equal(body.includes("CurseForge changelog editor did not open"), false);
+    const api = ticketBody({ id: "github", status: "error", message: "HTTP 500" });
+    assert.match(api, /HTTP 500/);
+    assert.equal(api.includes("## Notes"), false);
+    assert.equal(api.includes("## Filled"), false);
+    const bare = ticketBody({ id: "github", status: "error", message: "HTTP 500", filled: [], config: {} });
+    assert.equal(bare.includes("## Filled"), false);
+    assert.equal(bare.includes("## Config"), false);
+    const later = ticketBody({ id: "steam", status: "error", message: "later", reason: "not yet" });
+    assert.match(later, /not implemented yet/);
+    assert.equal(later.includes("\nlater"), false);
+    const href = ticketHref("CurseForge: Both  Editors", body, "curseforge");
+    assert.match(href, /^https:\/\/github.com\/musical-pig-dev\/OmniMod\/issues\/new\?/);
+    assert.match(href, /bug/);
+
+    const memory = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => memory.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        memory.set(key, value);
+      },
+    };
+    assert.deepEqual(loadTickets(storage), {});
+    assert.deepEqual(loadTickets({ getItem: () => "{" }), {});
+    assert.deepEqual(loadTickets({ getItem: () => "null" }), {});
+    assert.deepEqual(loadTickets({ getItem: () => "1" }), {});
+    assert.deepEqual(loadTickets({ getItem: () => "[]" }), {});
+    assert.deepEqual(loadTickets({ getItem: () => "\"x\"" }), {});
+    assert.deepEqual(
+      loadTickets({
+        getItem: () => JSON.stringify({ keep: "https://github.com/musical-pig-dev/OmniMod/issues/1", drop: "http://nope", num: 4 }),
+      }),
+      { keep: "https://github.com/musical-pig-dev/OmniMod/issues/1" },
+    );
+    assert.deepEqual(loadTickets({ getItem: () => { throw new Error("no"); } }), {});
+    saveTicket("curseforge|changelog|both editors", "https://github.com/musical-pig-dev/OmniMod/issues/3", storage);
+    saveTicket("nexus|host|host down", "https://github.com/acme/nope", storage);
+    assert.equal(loadTickets(storage)["curseforge|changelog|both editors"], "https://github.com/musical-pig-dev/OmniMod/issues/3");
+    assert.deepEqual(loadTickets(), {});
+    saveTicket("nexus|host|host down", "https://github.com/musical-pig-dev/OmniMod/issues/8");
+    assert.equal(loadTickets()["nexus|host|host down"], "https://github.com/musical-pig-dev/OmniMod/issues/8");
+    localStorage.clear();
   });
 });

@@ -51,8 +51,14 @@ import { ProtectKeys, UnlockKeys } from "@/components/omnimod/vault-lock";
 import { archiveName, makeZip } from "@/lib/omnimod/zip";
 
 import {
+  failureSignature,
+  loadTickets,
   readyCount,
   runPublish,
+  saveTicket,
+  ticketBody,
+  ticketHref,
+  ticketTitle,
   type PublishInput,
   type SiteResult,
   type PublishProgress,
@@ -83,58 +89,173 @@ function CredentialMark({ saved }: { saved: boolean }) {
 }
 
 export function ResultSlip({ result, index }: { result: SiteResult; index: number }) {
-  const name = PLATFORMS.find((platform) => platform.id === result.id)?.name ?? result.id;
+  const platform = PLATFORMS.find((item) => item.id === result.id);
+  const name = platform?.name ?? result.id;
   const sent = result.status === "success";
   const failed = result.status === "error";
   const label = sent ? "Sent" : failed ? "Failed" : "Skipped";
+  const lane = platform?.lane ?? "api";
+  const short =
+    failed && lane === "bot" && result.step && result.reason ? `${result.step}: ${result.reason}` : result.message;
+  const [open, setOpen] = useState(false);
+  const [link, setLink] = useState("");
+  const [saved, setSaved] = useState<string | null>(null);
+  const signature = failureSignature(result);
+
+  function fieldLabel(key: string): string {
+    if (!platform) return key;
+    const match = platform.fields.find((field) => field.key === key);
+    return match ? match.label : key;
+  }
+
+  function toggle() {
+    const next = !open;
+    setOpen(next);
+    if (next) setSaved(loadTickets()[signature] ?? null);
+  }
+
+  function create() {
+    window.open(ticketHref(ticketTitle(name, result), ticketBody(result), result.id), "_blank", "noopener");
+  }
+
+  function keep() {
+    const url = link.trim();
+    if (!url.startsWith("https://github.com/musical-pig-dev/OmniMod/issues/")) return;
+    saveTicket(signature, url);
+    setSaved(url);
+  }
+
   return (
     <li
-      className={`flex items-center gap-3 rounded-2xl border bg-ink px-4 py-3 ${
+      className={`rounded-2xl border bg-ink px-4 py-3 ${
         sent ? "parcel-arrive border-ok/35" : failed ? "parcel-return border-bad/40" : "parcel-held border-dashed border-line"
       }`}
       style={{ animationDelay: `${index * 70}ms` }}
     >
-      <span
-        className={`relative grid size-12 shrink-0 place-items-center rounded-xl border ${
-          sent
-            ? "border-brass/50 bg-brass/10 text-brass"
-            : failed
-              ? "border-bad/40 bg-bad/10 text-bad"
-              : "border-dashed border-line bg-panel text-mist"
-        }`}
-        aria-hidden="true"
-      >
-        <Package className="size-5" />
-        {sent ? (
-          <span className="parcel-seal absolute -right-1 -bottom-1 grid size-5 place-items-center rounded-full bg-ok text-ink">
-            <Check className="size-3" />
-          </span>
-        ) : null}
-        {failed ? <span className="absolute inset-x-2 top-1/2 border-t border-bad" /> : null}
-      </span>
-      <div className="min-w-0 flex-1">
-        <p className="font-medium text-ivory">{name}</p>
-        <p className="mt-1 text-sm leading-relaxed text-mist">{result.message}</p>
-        {sent && result.url ? (
-          <a
-            href={result.url}
-            target="_blank"
-            rel="noreferrer"
-            className="mt-1 inline-flex items-center gap-1 text-sm text-brass"
-          >
-            View upload
-            <ExternalLink className="size-3.5" aria-hidden="true" />
-          </a>
-        ) : null}
+      <div className="flex items-center gap-3">
+        <span
+          className={`relative grid size-12 shrink-0 place-items-center rounded-xl border ${
+            sent
+              ? "border-brass/50 bg-brass/10 text-brass"
+              : failed
+                ? "border-bad/40 bg-bad/10 text-bad"
+                : "border-dashed border-line bg-panel text-mist"
+          }`}
+          aria-hidden="true"
+        >
+          <Package className="size-5" />
+          {sent ? (
+            <span className="parcel-seal absolute -right-1 -bottom-1 grid size-5 place-items-center rounded-full bg-ok text-ink">
+              <Check className="size-3" />
+            </span>
+          ) : null}
+          {failed ? <span className="absolute inset-x-2 top-1/2 border-t border-bad" /> : null}
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="font-medium text-ivory">{name}</p>
+          <p className="mt-1 text-sm leading-relaxed text-mist">{short}</p>
+          {sent && result.url ? (
+            <a
+              href={result.url}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-1 inline-flex items-center gap-1 text-sm text-brass"
+            >
+              View upload
+              <ExternalLink className="size-3.5" aria-hidden="true" />
+            </a>
+          ) : null}
+        </div>
+        <span
+          className={`shrink-0 -rotate-6 rounded border px-2 py-1 text-[10px] font-medium uppercase tracking-[0.16em] ${
+            sent ? "border-ok/50 text-ok" : failed ? "border-bad/50 text-bad" : "border-line text-mist"
+          }`}
+        >
+          {label}
+        </span>
       </div>
-      <span
-        className={`shrink-0 -rotate-6 rounded border px-2 py-1 text-[10px] font-medium uppercase tracking-[0.16em] ${
-          sent ? "border-ok/50 text-ok" : failed ? "border-bad/50 text-bad" : "border-line text-mist"
-        }`}
-      >
-        {label}
-      </span>
+      {failed ? (
+        <div className="mt-3 border-t border-line pt-3">
+          <button
+            type="button"
+            aria-expanded={open}
+            aria-label={`${name} failure`}
+            onClick={toggle}
+            className="inline-flex items-center gap-1 text-sm text-ivory"
+          >
+            {open ? "Hide details" : "Show details"}
+            {open ? <ChevronDown className="size-4" aria-hidden="true" /> : <ChevronRight className="size-4" aria-hidden="true" />}
+          </button>
+          {open ? (
+            <div className="mt-3 grid gap-2 text-sm text-mist">
+              {result.step ? <p>Step: {result.step}</p> : null}
+              {result.reason ? <p>Reason: {result.reason}</p> : null}
+              {result.filled?.length ? <p>Filled: {result.filled.join(", ")}</p> : null}
+              {result.file ? <p>File: {result.file}</p> : null}
+              {result.config
+                ? Object.entries(result.config).map(([key, value]) => (
+                    <p key={key}>
+                      {fieldLabel(key)}: {value}
+                    </p>
+                  ))
+                : null}
+              {saved ? (
+                <a href={saved} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-brass">
+                  View Ticket
+                  <ExternalLink className="size-3.5" aria-hidden="true" />
+                </a>
+              ) : (
+                <div className="grid gap-2">
+                  <button type="button" onClick={create} className="h-11 rounded-full bg-brass px-4 text-ink">
+                    Create Ticket
+                  </button>
+                  <label className="grid gap-1 text-ivory">
+                    Issue link
+                    <input
+                      value={link}
+                      onChange={(event) => setLink(event.target.value)}
+                      className="h-11 rounded-xl border border-line bg-ink px-3 text-ivory"
+                    />
+                  </label>
+                  <button type="button" onClick={keep} className="h-11 rounded-full border border-line px-4 text-ivory">
+                    Save issue link
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </li>
+  );
+}
+
+function FancyCheck({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <label className="inline-flex min-h-11 cursor-pointer items-center gap-3 text-sm text-ivory">
+      <span className="relative grid size-5 shrink-0 place-items-center">
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={(event) => onChange(event.target.checked)}
+          className="peer size-5 appearance-none rounded-md border border-brass/80 bg-ink outline-none checked:border-brass checked:bg-brass focus-visible:ring-2 focus-visible:ring-brass focus-visible:ring-offset-2 focus-visible:ring-offset-ink"
+        />
+        <Check
+          className="pointer-events-none absolute size-3.5 text-brass-ink opacity-0 peer-checked:opacity-100"
+          strokeWidth={3}
+          aria-hidden="true"
+        />
+      </span>
+      {label}
+    </label>
   );
 }
 
@@ -738,14 +859,11 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
             {active ? (
               <>
                 <div className="space-y-2 px-1">
-                  <label className="flex min-h-11 items-center gap-3 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={active.autoZip}
-                      onChange={(event) => patchMod(active.id, { autoZip: event.target.checked })}
-                    />
-                    Auto-zip
-                  </label>
+                  <FancyCheck
+                    label="Auto-zip"
+                    checked={active.autoZip}
+                    onChange={(checked) => patchMod(active.id, { autoZip: checked })}
+                  />
                   {active.autoZip ? (
                     <>
                       <input
@@ -762,10 +880,13 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
                   ) : null}
                 </div>
                 {(["api", "bot"] as const).map((lane) => (
-                  <div key={lane} className="space-y-3">
-                    <h3 className="px-1 pt-2 text-xs uppercase tracking-[0.16em] text-mist">
-                      {lane === "api" ? "API" : "Bot"}
-                    </h3>
+                  <fieldset key={lane} className="min-w-0 rounded-2xl border border-brass/80 px-3 pt-2 pb-3">
+                    <legend className="bg-ink px-2">
+                      <h3 className="text-xs font-medium uppercase tracking-[0.18em] text-brass">
+                        {lane === "api" ? "API" : "Bot"}
+                      </h3>
+                    </legend>
+                    <div className="space-y-3">
                     {PLATFORMS.filter((platform) => platform.lane === lane).map((platform) => (
                       <SiteCard
                         key={`${active.id}-${platform.id}`}
@@ -779,10 +900,13 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
                         onChange={(next) => update(platform.id, next)}
                       />
                     ))}
-                  </div>
+                    </div>
+                  </fieldset>
                 ))}
-                <div className="space-y-3">
-                  <h3 className="px-1 pt-2 text-xs uppercase tracking-[0.16em] text-mist">Later</h3>
+                <fieldset className="min-w-0 rounded-2xl border border-dashed border-brass/80 px-3 pt-2 pb-3">
+                  <legend className="bg-ink px-2">
+                    <h3 className="text-xs font-medium uppercase tracking-[0.18em] text-brass">Later</h3>
+                  </legend>
                   <ul className="space-y-2">
                     {PLATFORMS.filter((platform) => platform.lane === "later").map((platform) => (
                       <li key={platform.id} className="rounded-2xl border border-line bg-panel px-4 py-3">
@@ -799,7 +923,7 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
                       </li>
                     ))}
                   </ul>
-                </div>
+                </fieldset>
               </>
             ) : (
               <p className="px-1 text-sm text-mist">Add a mod before saving host keys.</p>
