@@ -113,7 +113,8 @@ describe("live transport", () => {
       return jsonResponse({ message: "no" }, 500);
     };
     const transport = host(fetchImpl);
-    assert.equal((await transport("nexus", input({ apiKey: "k", gameDomain: "site", modId: "12" }, { fileName: "bad [name].zip" }))).ok, true);
+    const nexus = await transport("nexus", input({ apiKey: "k", gameDomain: "skyrimspecialedition", modId: "195304" }, { fileName: "bad [name].zip" }));
+    assert.equal(nexus.ok && nexus.url, "https://www.nexusmods.com/skyrimspecialedition/mods/195304");
     assert.match(posted[0] ?? "", /"mod_id":"internal-12"/);
     assert.equal((await transport("nexus", input({ apiKey: "k", gameDomain: "site", modId: "12" }, { fileName: "###" }))).ok, true);
     assert.match((await transport("nexus", input({ apiKey: "k", modId: "12" }))).message ?? "", /game domain/);
@@ -123,16 +124,29 @@ describe("live transport", () => {
     assert.match((await transport("nexus", input({ apiKey: "k", gameDomain: "gone", modId: "12" }))).message ?? "", /mod not found/);
     assert.match((await transport("curseforge", input({ projectId: "9" }))).message ?? "", /game version/);
     assert.match((await transport("curseforge", input({}))).message ?? "", /project id/);
-    assert.equal((await transport("modrinth", input({ token: "mrp", project: "lanterns" }))).ok, true);
-    assert.equal((await transport("modrinth", input({}))).ok, true);
-    assert.ok(calls.some((call) => call.startsWith("GET https://api.modrinth.com/v2/project/lanterns")));
-    assert.equal((await transport("github", input({ token: "gh", repo: "studio/mod" }))).ok, true);
+    const modrinth = await transport("modrinth", input({ token: "mrp", project: "testproject-junk492304" }));
+    assert.equal(modrinth.ok && modrinth.url, "https://modrinth.com/mod/testproject-junk492304/versions");
+    const plain = await transport("modrinth", input({}));
+    assert.equal(plain.ok, true);
+    assert.equal(plain.url, undefined);
+    assert.ok(calls.some((call) => call.startsWith("GET https://api.modrinth.com/v2/project/testproject-junk492304")));
+    const github = await transport("github", input({ token: "gh", repo: "musical-pig-game/omnimod-test" }));
+    assert.equal(github.ok && github.url, "https://github.com/musical-pig-game/omnimod-test/releases");
     assert.equal((await transport("github", input({ repo: "studio/mod" }))).ok, true);
     const thunder = await transport(
       "thunderstore",
       input({ token: "tss", namespace: "Team", community: "riskofrain2" }, { file: pack }),
     );
     assert.equal(thunder.ok && thunder.detail, "Team");
+    assert.equal(thunder.url, undefined);
+    const listed = await transport(
+      "thunderstore",
+      input(
+        { token: "tss", namespace: "LazyTeamNoWork", community: "riskofrain2" },
+        { file: new Blob(['{"name": "MyFirstMod"} icon.png README.md manifest.json']) },
+      ),
+    );
+    assert.equal(listed.ok && listed.url, "https://thunderstore.io/c/riskofrain2/p/LazyTeamNoWork/MyFirstMod/");
     const unnamed = await transport("thunderstore", input({ community: "riskofrain2" }, { file: pack }));
     assert.equal(unnamed.ok && unnamed.detail, "");
     assert.ok(forms.includes("data,file"));

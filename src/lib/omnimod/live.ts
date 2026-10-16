@@ -131,7 +131,10 @@ async function publishNexus(
     }),
   });
   if (!published.ok) return { ok: false, message: await errorText(published) };
-  return { ok: true };
+  return {
+    ok: true,
+    url: `https://www.nexusmods.com/${encodeURIComponent(game)}/mods/${encodeURIComponent(scoped)}`,
+  };
 }
 
 async function waitForNexus(
@@ -203,7 +206,8 @@ async function publishModrinth(
     body,
   });
   if (!response.ok) return { ok: false, message: await errorText(response) };
-  return { ok: true };
+  if (!project) return { ok: true };
+  return { ok: true, url: `https://modrinth.com/mod/${encodeURIComponent(project)}/versions` };
 }
 
 function modrinthHeaders(token: string): Record<string, string> {
@@ -269,7 +273,7 @@ async function publishGitHub(
     body: input.file,
   });
   if (!asset.ok) return { ok: false, message: await errorText(asset) };
-  return { ok: true };
+  return { ok: true, url: `https://github.com/${repo}/releases` };
 }
 
 async function publishThunderstore(
@@ -331,10 +335,21 @@ async function publishThunderstore(
     }),
   });
   if (!submitted.ok) return { ok: false, message: await errorText(submitted) };
-  return { ok: true, detail: team };
+  const named = packageName(new TextDecoder("latin1").decode(bytes));
+  if (!team || !named) return { ok: true, detail: team };
+  return {
+    ok: true,
+    detail: team,
+    url: `https://thunderstore.io/c/${encodeURIComponent(community)}/p/${encodeURIComponent(team)}/${encodeURIComponent(named)}/`,
+  };
 }
 
 const THUNDERSTORE_ROOT = ["icon.png", "README.md", "manifest.json"];
+
+function packageName(text: string): string {
+  const found = text.match(/"name"\s*:\s*"([^"\\]+)"/);
+  return found ? found[1].trim() : "";
+}
 
 async function thunderstorePackage(file: Blob): Promise<string | null> {
   const text = new TextDecoder("latin1").decode(new Uint8Array(await file.arrayBuffer()));

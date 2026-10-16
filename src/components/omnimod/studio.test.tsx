@@ -6,7 +6,7 @@ import { ticketTitle } from "@/lib/omnimod/publish";
 import { Delivery, ReleaseCard, ResultDeck, ResultSlip, SiteCard, Studio } from "./studio";
 import { platformById } from "@/lib/omnimod/catalog";
 import { emptyConfig } from "@/lib/omnimod/catalog";
-import { createMod } from "@/lib/omnimod/mods";
+import { createMod, hostFile, readHostFile } from "@/lib/omnimod/mods";
 import { MODS_KEY } from "@/lib/omnimod/storage";
 import * as vault from "@/lib/omnimod/vault";
 
@@ -33,6 +33,27 @@ async function addMod(user: ReturnType<typeof userEvent.setup>, name: string) {
 
 async function typeField(user: ReturnType<typeof userEvent.setup>, label: string, value: string) {
   await user.type(screen.getByLabelText(label), value);
+}
+
+async function captureDownload(run: () => Promise<void> | void) {
+  const previous = URL.createObjectURL;
+  const revoke = URL.revokeObjectURL;
+  let saved: Blob | null = null;
+  URL.createObjectURL = ((blob: Blob) => {
+    saved = blob;
+    return "blob:hosts";
+  }) as typeof URL.createObjectURL;
+  URL.revokeObjectURL = (() => undefined) as typeof URL.revokeObjectURL;
+  const click = HTMLAnchorElement.prototype.click;
+  HTMLAnchorElement.prototype.click = () => {};
+  try {
+    await run();
+  } finally {
+    URL.createObjectURL = previous;
+    URL.revokeObjectURL = revoke;
+    HTMLAnchorElement.prototype.click = click;
+  }
+  return saved ? await saved.text() : "";
 }
 
 describe("Studio", () => {
@@ -949,5 +970,71 @@ describe("Studio", () => {
     finish("stale");
     await Promise.resolve();
     spy.mockRestore();
+  });
+
+  it("exports and imports host keys", async () => {
+    const user = userEvent.setup();
+    render(<Studio transport={ok} />);
+    await addMod(user, "Lanterns");
+    await user.click(screen.getByRole("button", { name: /Hosts/ }));
+    await user.click(screen.getByRole("button", { name: /Nexus Mods/ }));
+    await typeField(user, "API key", "secret");
+    const text = await captureDownload(() => user.click(screen.getByRole("button", { name: "Export hosts" })));
+    expect(text).toContain("secret");
+    await user.click(screen.getByRole("button", { name: "Import hosts" }));
+    const imported = hostFile(JSON.parse(text).configs);
+    imported.configs.nexus.fields.apiKey = "next";
+    await user.upload(screen.getByLabelText("Import hosts file"), new File([JSON.stringify(imported)], "hosts.json"));
+    expect((screen.getByLabelText("API key") as HTMLInputElement).value).toBe("next");
+    fireEvent.change(screen.getByLabelText("Import hosts file"), { target: { files: [] } });
+    await user.upload(screen.getByLabelText("Import hosts file"), new File(["nope"], "bad.json"));
+    expect(screen.getByText("That file is not a host export.")).toBeTruthy();
+    await user.upload(screen.getByLabelText("Import hosts file"), new File([JSON.stringify({ kind: "no" })], "bad.json"));
+    expect(screen.getByText("That file is not a host export.")).toBeTruthy();
+  });
+
+  it("asks for the recovery key before moving encrypted hosts", async () => {
+    const user = userEvent.setup();
+    const secret = vault.createRecoveryKey();
+    const key = await vault.importRecoveryKey(secret);
+    const mod = createMod("Lanterns");
+    mod.configs.nexus.fields.apiKey = "secret";
+    localStorage.setItem(vault.VAULT_KEY, await vault.seal(key!, { mods: [mod], activeId: mod.id }));
+    render(<Studio transport={ok} />);
+    fireEvent.change(await screen.findByLabelText("Key"), { target: { value: secret } });
+    await user.click(screen.getByRole("button", { name: "Unlock" }));
+    await user.click(await screen.findByRole("button", { name: /Hosts/ }));
+    await user.click(screen.getByRole("button", { name: "Export hosts" }));
+    fireEvent.change(screen.getByLabelText("Recovery key"), { target: { value: "wrong-key" } });
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    expect(await screen.findByText("That key does not open these hosts.")).toBeTruthy();
+    const text = await captureDownload(async () => {
+      fireEvent.change(screen.getByLabelText("Recovery key"), { target: { value: secret } });
+      await user.click(screen.getByRole("button", { name: "Continue" }));
+    });
+    const opened = await vault.openValue(secret, text);
+    expect(readHostFile(opened?.value)?.nexus.fields.apiKey).toBe("secret");
+    await user.click(screen.getByRole("button", { name: "Export hosts" }));
+    localStorage.removeItem(vault.VAULT_KEY);
+    fireEvent.change(screen.getByLabelText("Recovery key"), { target: { value: secret } });
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    expect(await screen.findByText("That key does not open these hosts.")).toBeTruthy();
+    const moved = hostFile(mod.configs);
+    moved.configs.nexus.fields.apiKey = "moved";
+    const sealed = await vault.sealValue(key!, moved);
+    await user.upload(screen.getByLabelText("Import hosts file"), new File([sealed], "hosts.json"));
+    fireEvent.change(screen.getByLabelText("Recovery key"), { target: { value: "wrong-key" } });
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    expect(await screen.findByText("That key does not open these hosts.")).toBeTruthy();
+    const junk = await vault.sealValue(key!, { kind: "nope" });
+    await user.upload(screen.getByLabelText("Import hosts file"), new File([junk], "hosts.json"));
+    fireEvent.change(screen.getByLabelText("Recovery key"), { target: { value: secret } });
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    expect(await screen.findByText("That key does not open these hosts.")).toBeTruthy();
+    await user.upload(screen.getByLabelText("Import hosts file"), new File([sealed], "hosts.json"));
+    fireEvent.change(screen.getByLabelText("Recovery key"), { target: { value: secret } });
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    await user.click(screen.getByRole("button", { name: /Nexus Mods/ }));
+    expect((screen.getByLabelText("API key") as HTMLInputElement).value).toBe("moved");
   });
 });

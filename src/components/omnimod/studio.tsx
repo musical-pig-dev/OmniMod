@@ -33,9 +33,11 @@ import {
 } from "@/lib/omnimod/catalog";
 import {
   createMod,
+  hostFile,
   lastPublished,
   nameTaken,
   normalizeConfigs,
+  readHostFile,
   recordPublish,
   versionUsed,
   type ModRecord,
@@ -48,7 +50,7 @@ import {
   loadConfigs,
   loadLibrary,
 } from "@/lib/omnimod/storage";
-import { VAULT_KEY, importRecoveryKey, openVault, seal, type VaultPayload } from "@/lib/omnimod/vault";
+import { VAULT_KEY, importRecoveryKey, openValue, openVault, seal, sealValue, sealedRecord, type VaultPayload } from "@/lib/omnimod/vault";
 import { RevisionLink } from "@/components/omnimod/revision";
 import { ProtectKeys, UnlockKeys } from "@/components/omnimod/vault-lock";
 import { archiveName, makeZip } from "@/lib/omnimod/zip";
@@ -886,6 +888,12 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
   const [fileError, setFileError] = useState<string | null>(null);
   const [openId, setOpenId] = useState<PlatformId | null>(null);
   const [hostsOpen, setHostsOpen] = useState(false);
+  const importHosts = useRef<HTMLInputElement>(null);
+  const pendingHosts = useRef("");
+  const [hostGate, setHostGate] = useState<null | "export" | "import">(null);
+  const [hostSecret, setHostSecret] = useState("");
+  const [hostKeyError, setHostKeyError] = useState(false);
+  const [hostFileError, setHostFileError] = useState("");
   const [lineOpen, setLineOpen] = useState(false);
   const [running, setRunning] = useState(false);
   const [results, setResults] = useState<SiteResult[] | null>(null);
@@ -1044,6 +1052,88 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
     }
   }
 
+  function downloadHosts(text: string) {
+    const blob = new Blob([text], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "omnimod-hosts.json";
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function exportHosts() {
+    setHostFileError("");
+    setHostKeyError(false);
+    const text = JSON.stringify(hostFile(active.configs));
+    if (vault !== "open") {
+      downloadHosts(text);
+      return;
+    }
+    pendingHosts.current = text;
+    setHostSecret("");
+    setHostGate("export");
+  }
+
+  async function onImportFile(file: File | undefined) {
+    if (!file) return;
+    const text = await file.text();
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      setHostFileError("That file is not a host export.");
+      return;
+    }
+    if (sealedRecord(parsed)) {
+      pendingHosts.current = text;
+      setHostSecret("");
+      setHostKeyError(false);
+      setHostFileError("");
+      setHostGate("import");
+      return;
+    }
+    const configs = readHostFile(parsed);
+    if (!configs) {
+      setHostFileError("That file is not a host export.");
+      return;
+    }
+    patchMod(active.id, { configs });
+    setHostGate(null);
+    setHostFileError("");
+  }
+
+  async function confirmHostKey() {
+    const secret = hostSecret.trim();
+    if (hostGate === "export") {
+      const stored = localStorage.getItem(VAULT_KEY);
+      if (!stored) {
+        setHostKeyError(true);
+        return;
+      }
+      const opened = await openVault(secret, stored);
+      if (!opened) {
+        setHostKeyError(true);
+        return;
+      }
+      downloadHosts(await sealValue(opened.key, JSON.parse(pendingHosts.current) as unknown));
+      setHostGate(null);
+      return;
+    }
+    const opened = await openValue(secret, pendingHosts.current);
+    if (!opened) {
+      setHostKeyError(true);
+      return;
+    }
+    const configs = readHostFile(opened.value);
+    if (!configs) {
+      setHostKeyError(true);
+      return;
+    }
+    patchMod(active!.id, { configs });
+    setHostGate(null);
+  }
+
   const sent = results?.filter((result) => result.status === "success").length ?? 0;
   const failed = results?.filter((result) => result.status === "error").length ?? 0;
   const formOn = Boolean(active) && !hostsOpen && !libraryOpen;
@@ -1163,21 +1253,79 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
                 {results ? ` · ${sent} sent${failed ? ` · ${failed} failed` : ""}` : ""}
               </p>
               {active ? (
-                <FancySelect
-                  pill
-                  label="Mod"
-                  value={active.id}
-                  choices={mods.map((mod) => ({ value: mod.id, label: mod.name }))}
-                  onChange={(id) => {
-                    setActiveId(id);
-                    setOpenId(null);
-                    setNameEdit(null);
-                    setFileSize(null);
-                    setResults(null);
-                  }}
-                />
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void exportHosts()}
+                    className="h-11 rounded-full border border-line px-4 text-sm text-ivory"
+                  >
+                    Export hosts
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => importHosts.current!.click()}
+                    className="h-11 rounded-full border border-line px-4 text-sm text-ivory"
+                  >
+                    Import hosts
+                  </button>
+                  <input
+                    ref={importHosts}
+                    aria-label="Import hosts file"
+                    type="file"
+                    accept="application/json,.json"
+                    className="sr-only"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      event.target.value = "";
+                      void onImportFile(file);
+                    }}
+                  />
+                  <FancySelect
+                    pill
+                    label="Mod"
+                    value={active.id}
+                    choices={mods.map((mod) => ({ value: mod.id, label: mod.name }))}
+                    onChange={(id) => {
+                      setActiveId(id);
+                      setOpenId(null);
+                      setNameEdit(null);
+                      setFileSize(null);
+                      setResults(null);
+                      setHostGate(null);
+                    }}
+                  />
+                </div>
               ) : null}
             </div>
+            {hostGate ? (
+              <form
+                className="flex flex-wrap items-center gap-2 px-1"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void confirmHostKey();
+                }}
+              >
+                <input
+                  type="password"
+                  aria-label="Recovery key"
+                  value={hostSecret}
+                  onChange={(event) => {
+                    setHostSecret(event.target.value);
+                    setHostKeyError(false);
+                  }}
+                  className="h-11 min-w-0 flex-1 rounded-xl border border-line bg-ink px-3 font-mono text-sm outline-none focus:border-brass"
+                />
+                <button
+                  type="submit"
+                  disabled={!hostSecret.trim()}
+                  className="h-11 rounded-full bg-brass px-4 text-sm font-medium text-brass-ink disabled:cursor-not-allowed disabled:bg-line disabled:text-mist"
+                >
+                  Continue
+                </button>
+              </form>
+            ) : null}
+            {hostKeyError ? <p className="px-1 text-sm text-bad">That key does not open these hosts.</p> : null}
+            {hostFileError ? <p className="px-1 text-sm text-bad">{hostFileError}</p> : null}
             <p className="px-1 text-sm text-mist">{uploadHint(rule)}</p>
             {active ? (
               <>

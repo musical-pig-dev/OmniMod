@@ -4,6 +4,7 @@ import { PLATFORM_IDS, defaultConfigs } from "./catalog.ts";
 import {
   createMod,
   emptyTargets,
+  hostFile,
   hydrateMod,
   lastPublished,
   nextFreeVersion,
@@ -11,6 +12,7 @@ import {
   mergeAccount,
   modId,
   nameTaken,
+  readHostFile,
   recordPublish,
   targetsFromConfigs,
   versionUsed,
@@ -139,6 +141,14 @@ describe("mods", () => {
     assert.equal(nextFreeVersion("0.1.0", ["v0.1.0", "0.1.1"]), "0.1.2");
     assert.equal(nextFreeVersion("0.1.10", ["v0.1.10", "v0.1.11", "v0.1.12"]), "0.1.13");
     assert.equal(nextFreeVersion("beta", ["beta"]), "");
+    const packed = hostFile(defaultConfigs());
+    assert.equal(packed.kind, "omnimod-hosts");
+    assert.equal(readHostFile(packed)?.nexus.enabled, true);
+    assert.equal(readHostFile(null), null);
+    assert.equal(readHostFile({ kind: "nope", configs: {} }), null);
+    assert.equal(readHostFile({ kind: "omnimod-hosts", configs: null }), null);
+    assert.equal(readHostFile({ kind: "omnimod-hosts", configs: "no" }), null);
+    assert.equal(readHostFile({ kind: "omnimod-hosts" }), null);
   });
 
   it("keeps published versions when a saved mod is loaded", () => {

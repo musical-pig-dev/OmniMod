@@ -37,13 +37,17 @@ export async function importRecoveryKey(secret: string): Promise<CryptoKey | nul
   }
 }
 
-export async function seal(key: CryptoKey, payload: VaultPayload): Promise<string> {
+export async function sealValue(key: CryptoKey, value: unknown): Promise<string> {
   const iv = new Uint8Array(12);
   crypto.getRandomValues(iv);
-  const encoded = new TextEncoder().encode(JSON.stringify(payload));
+  const encoded = new TextEncoder().encode(JSON.stringify(value));
   const cipher = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, encoded);
   const sealed: Sealed = { v: 1, iv: bytesToB64(iv), data: bytesToB64(new Uint8Array(cipher)) };
   return JSON.stringify(sealed);
+}
+
+export async function seal(key: CryptoKey, payload: VaultPayload): Promise<string> {
+  return sealValue(key, payload);
 }
 
 export function readPayload(value: unknown): VaultPayload | null {
@@ -56,19 +60,32 @@ export function readPayload(value: unknown): VaultPayload | null {
   return { mods, activeId };
 }
 
-export async function openVault(secret: string, sealed: string): Promise<{ key: CryptoKey; payload: VaultPayload } | null> {
+export function sealedRecord(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const raw = value as { v?: unknown; iv?: unknown; data?: unknown };
+  return raw.v === 1 && typeof raw.iv === "string" && typeof raw.data === "string";
+}
+
+export async function openValue(secret: string, sealed: string): Promise<{ key: CryptoKey; value: unknown } | null> {
   const key = await importRecoveryKey(secret);
   if (!key) return null;
   try {
     const parsed = JSON.parse(sealed) as Partial<Sealed>;
-    if (parsed.v !== 1 || !parsed.iv || !parsed.data) return null;
-    const iv = b64ToBytes(parsed.iv);
-    const data = b64ToBytes(parsed.data);
+    if (!sealedRecord(parsed)) return null;
+    const record = parsed as { iv: string; data: string };
+    const iv = b64ToBytes(record.iv);
+    const data = b64ToBytes(record.data);
     const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, data);
-    const payload = readPayload(JSON.parse(new TextDecoder().decode(plain)));
-    if (!payload) return null;
-    return { key, payload };
+    return { key, value: JSON.parse(new TextDecoder().decode(plain)) };
   } catch {
     return null;
   }
+}
+
+export async function openVault(secret: string, sealed: string): Promise<{ key: CryptoKey; payload: VaultPayload } | null> {
+  const opened = await openValue(secret, sealed);
+  if (!opened) return null;
+  const payload = readPayload(opened.value);
+  if (!payload) return null;
+  return { key: opened.key, payload };
 }

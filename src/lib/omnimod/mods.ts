@@ -73,6 +73,17 @@ export function normalizeConfigs(value: Partial<ConfigMap> | undefined): ConfigM
   return configs;
 }
 
+export function hostFile(configs: ConfigMap): { kind: "omnimod-hosts"; configs: ConfigMap } {
+  return { kind: "omnimod-hosts", configs: normalizeConfigs(configs) };
+}
+
+export function readHostFile(value: unknown): ConfigMap | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as { kind?: unknown; configs?: unknown };
+  if (raw.kind !== "omnimod-hosts" || !raw.configs || typeof raw.configs !== "object") return null;
+  return normalizeConfigs(raw.configs as Partial<ConfigMap>);
+}
+
 function curseOverride(value: unknown): Record<string, string> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const next: Record<string, string> = {};

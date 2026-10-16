@@ -7,6 +7,7 @@ import {
   openVault,
   readPayload,
   seal,
+  sealedRecord,
 } from "./vault.ts";
 
 describe("vault", () => {
@@ -35,5 +36,9 @@ describe("vault", () => {
     assert.equal(readPayload({ mods: [mod], activeId: 4 })?.activeId, mod.id);
     assert.equal(await openVault(secret, JSON.stringify({ v: 1, data: "aa" })), null);
     assert.equal(await openVault(secret, JSON.stringify({ v: 1, iv: "aa" })), null);
+    assert.equal(sealedRecord(null), false);
+    assert.equal(sealedRecord("x"), false);
+    assert.equal(sealedRecord({ v: 2, iv: "a", data: "b" }), false);
+    assert.equal(sealedRecord({ v: 1, iv: "a", data: "b" }), true);
   });
 });
