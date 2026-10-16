@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "OmniMod",
+  "version": "0.1.0",
+  "description": "Publish one mod package to every host that already has an account.",
+  "action": {
+    "default_title": "Open OmniMod"
+  },
+  "icons": {
+    "16": "icon-16.png",
+    "32": "icon-32.png",
+    "48": "icon-48.png",
+    "128": "icon-128.png"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": ["tabs", "scripting"],
+  "host_permissions": [
+    "https://api.nexusmods.com/*",
+    "https://authors.curseforge.com/*",
+    "https://api.modrinth.com/*",
+    "https://api.github.com/*",
+    "https://uploads.github.com/*",
+    "https://thunderstore.io/*",
+    "https://*/*"
+  ]
+}

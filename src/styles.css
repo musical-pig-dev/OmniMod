@@ -1,0 +1,169 @@
+@import "tailwindcss";
+@source ".";
+
+@theme {
+  --font-sans: "Outfit", system-ui, sans-serif;
+  --font-display: "Fraunces", Georgia, serif;
+  --color-ink: #101412;
+  --color-panel: #181d1b;
+  --color-raised: #212824;
+  --color-line: #2e3732;
+  --color-ivory: #efeae0;
+  --color-mist: #a39c90;
+  --color-brass: #d4a054;
+  --color-brass-ink: #1c150c;
+  --color-ok: #8fbf98;
+  --color-bad: #e08a78;
+  --radius-card: 1.25rem;
+}
+
+@layer base {
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+
+  html,
+  body {
+    background: var(--color-ink);
+    color: var(--color-ivory);
+    color-scheme: dark;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@keyframes parcel-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
+}
+
+.parcel-bob {
+  animation: parcel-bob 1.6s ease-in-out infinite;
+}
+
+@keyframes parcel-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes parcel-return {
+  0% {
+    opacity: 0;
+    transform: translateX(10px);
+  }
+  45% {
+    opacity: 1;
+    transform: translateX(-5px);
+  }
+  75% {
+    transform: translateX(3px);
+  }
+  100% {
+    transform: none;
+  }
+}
+
+@keyframes parcel-held {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes parcel-seal {
+  from {
+    transform: scale(0);
+  }
+  to {
+    transform: scale(1);
+  }
+}
+
+.parcel-arrive {
+  animation: parcel-arrive 0.55s ease both;
+}
+
+@keyframes intro-orbit {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.intro-orbit {
+  animation: intro-orbit 9s linear infinite;
+}
+
+@keyframes intro-in {
+  from {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes intro-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+.intro-in {
+  animation: intro-in 0.8s ease both;
+}
+
+.intro-out {
+  animation: intro-out 0.9s ease forwards;
+}
+
+@keyframes intro-line {
+  from {
+    opacity: 0;
+    transform: translateY(2rem);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.intro-line {
+  animation: intro-line 0.7s ease both;
+}
+
+.parcel-held {
+  animation: parcel-held 0.4s ease both;
+}
+
+.parcel-seal {
+  animation: parcel-seal 0.35s ease both;
+}
