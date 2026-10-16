@@ -1,4 +1,4 @@
-# OmniMod
+# <img src="public/favicon.svg" width="32" height="32" alt="OmniMod"> OmniMod
 
 One archive. One publish. Every host that is ready.
 
