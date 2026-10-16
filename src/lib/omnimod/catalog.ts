@@ -319,10 +319,6 @@ export function typeLock(configs: ConfigMap): string[] | null {
   return lists.reduce((shared, list) => shared.filter((ext) => list.includes(ext)));
 }
 
-export function hostTakesOne(id: PlatformId): boolean {
-  return !HOST_UPLOAD[id].multiple;
-}
-
 export function typeBlock(platform: Platform, configs: ConfigMap, fileName: string, autoZip = false): string | null {
   if (platform.lane === "later") return null;
   const accepts = platform.accepts;

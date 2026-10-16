@@ -324,7 +324,7 @@ describe("runPublish", () => {
     assert.equal(blank.find((result) => result.id === "nexus")?.url, undefined);
   });
 
-  it("sends a zip only to hosts that need one", async () => {
+  it("sends the zip to every host when auto zip is on", async () => {
     const jar = new Blob(["jar"]);
     const other = new Blob(["other"]);
     const packed = new Blob(["packed"]);
@@ -332,11 +332,11 @@ describe("runPublish", () => {
     const base: PublishInput = { fileName: "mod.jar", version: "1.0.0", changelog: "notes", autoZip: true };
     assert.equal(deliveryFile("nexus", { ...base, autoZip: false }, original, packed, [{ name: "mod.jar", blob: jar }]), original);
     assert.equal(deliveryFile("nexus", base, original, packed, []), original);
-    assert.equal(deliveryFile("github", base, original, packed, [{ name: "mod.jar", blob: jar }]), jar);
-    assert.equal(deliveryFile("modrinth", base, original, packed, [{ name: "mod.jar", blob: jar }]), jar);
+    assert.equal(deliveryFile("github", base, original, packed, [{ name: "mod.jar", blob: jar }]), packed);
+    assert.equal(deliveryFile("modrinth", base, original, packed, [{ name: "mod.jar", blob: jar }]), packed);
     assert.equal(deliveryFile("nexus", base, original, packed, [{ name: "mod.jar", blob: jar }]), packed);
     assert.equal(deliveryFile("nexus", base, original, null, [{ name: "mod.jar", blob: jar }]), original);
-    assert.equal(deliveryFile("modrinth", base, original, packed, [{ name: "notes.txt", blob: jar }]), original);
+    assert.equal(deliveryFile("modrinth", base, original, packed, [{ name: "notes.txt", blob: jar }]), packed);
     assert.equal(
       deliveryFile("thunderstore", base, original, packed, [
         { name: "a.jar", blob: jar },
@@ -356,12 +356,13 @@ describe("runPublish", () => {
         { name: "a.jar", blob: jar },
         { name: "b.jar", blob: other },
       ]),
-      jar,
+      packed,
     );
     assert.equal(deliveryFile("curseforge", base, original, packed, [{ name: "mod.jar", blob: jar }]), packed);
     assert.equal(deliveryFile("curseforge", base, original, null, [{ name: "mod.jar", blob: jar }]), original);
     assert.equal(deliveryFile("curseforge", base, original, packed, [{ name: "mod.zip", blob: jar }]), jar);
     const seen: Partial<Record<PlatformId, Blob | null>> = {};
+    const names: Partial<Record<PlatformId, string>> = {};
     const zipped = planPublish(withReady(["nexus"]), { ...base, fileName: "mod.jar" });
     assert.equal(zipped.find((entry) => entry.id === "nexus")?.action, "publish");
     await runPublish({
@@ -372,12 +373,43 @@ describe("runPublish", () => {
       sources: [{ name: "mod.jar", blob: jar }],
       transport: async (id, next) => {
         seen[id] = next.file ?? null;
+        names[id] = next.fileName;
         return { ok: true };
       },
     });
     assert.equal(seen.nexus, packed);
-    assert.equal(seen.modrinth, jar);
-    assert.equal(seen.github, jar);
+    assert.equal(seen.modrinth, packed);
+    assert.equal(seen.github, packed);
+    assert.equal(names.curseforge, undefined);
+    assert.equal(names.nexus, "mod.zip");
+    assert.equal(names.modrinth, "mod.zip");
+    assert.equal(names.github, "mod.zip");
+    let curseName = "";
+    await runPublish({
+      input: base,
+      configs: withReady(["curseforge"]),
+      file: original,
+      zip: new File(["packed"], "Bundle.zip"),
+      sources: [{ name: "mod.jar", blob: jar }],
+      transport: async (_id, next) => {
+        curseName = next.fileName;
+        return { ok: false, message: "no" };
+      },
+    });
+    assert.equal(curseName, "Bundle.zip");
+    let kept = "";
+    await runPublish({
+      input: { ...base, fileName: "mod.zip" },
+      configs: withReady(["github"]),
+      file: original,
+      zip: packed,
+      sources: [{ name: "mod.zip", blob: jar }],
+      transport: async (_id, next) => {
+        kept = next.fileName;
+        return { ok: true };
+      },
+    });
+    assert.equal(kept, "mod.zip");
   });
 });
 

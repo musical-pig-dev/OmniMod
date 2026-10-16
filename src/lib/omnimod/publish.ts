@@ -1,6 +1,5 @@
 import {
   PLATFORMS,
-  hostTakesOne,
   type ConfigMap,
   type PlatformId,
   isConfigured,
@@ -201,21 +200,23 @@ function preferZip(zip: Blob | null, file: Blob | null): Blob | null {
 }
 
 export function deliveryFile(
-  id: PlatformId,
+  _id: PlatformId,
   input: PublishInput,
   file: Blob | null,
   zip: Blob | null,
   sources: { name: string; blob: Blob }[],
 ): Blob | null {
   if (!input.autoZip || sources.length === 0) return file;
-  const accepts = platformById(id).accepts;
   const first = sources[0];
-  if (id === "curseforge" && fileExtension(first.name) !== ".zip") return preferZip(zip, file);
-  if (sources.length > 1 && hostTakesOne(id)) return preferZip(zip, file);
-  const ext = fileExtension(first.name);
-  if (!accepts || accepts.includes(ext)) return first.blob;
-  if (accepts.includes(".zip")) return preferZip(zip, file);
-  return file;
+  if (sources.length === 1 && fileExtension(first.name) === ".zip") return first.blob;
+  return preferZip(zip, file);
+}
+
+function sentName(input: PublishInput, blob: Blob | null, zip: Blob | null): string {
+  if (!zip || blob !== zip) return input.fileName;
+  if (zip instanceof File) return zip.name.trim();
+  const stem = input.fileName.trim().replace(/\.[^.]+$/, "");
+  return `${stem}.zip`;
 }
 
 export function failureFacts(id: PlatformId, input: PublishInput, configs: ConfigMap) {
@@ -260,9 +261,10 @@ export async function runPublish(args: {
 
     try {
       args.onProgress?.({ completed, total: queued.length, current: entry.id, failed });
+      const blob = deliveryFile(entry.id, args.input, args.file ?? args.input.file ?? null, args.zip ?? null, args.sources ?? []);
+      const sent = { ...args.input, file: blob, fileName: sentName(args.input, blob, args.zip ?? null) };
       const response = await args.transport(entry.id, {
-        ...args.input,
-        file: deliveryFile(entry.id, args.input, args.file ?? args.input.file ?? null, args.zip ?? null, args.sources ?? []),
+        ...sent,
         fields: args.configs[entry.id].fields,
       });
       if (response.ok) {
@@ -284,7 +286,7 @@ export async function runPublish(args: {
           ...(response.reason ? { reason: response.reason } : {}),
           ...(response.filled && response.filled.length > 0 ? { filled: response.filled } : {}),
           ...(response.logs && response.logs.length > 0 ? { logs: response.logs } : {}),
-          ...failureFacts(entry.id, args.input, args.configs),
+          ...failureFacts(entry.id, sent, args.configs),
         });
       }
     } catch (error) {

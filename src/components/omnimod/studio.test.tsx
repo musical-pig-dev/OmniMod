@@ -253,6 +253,34 @@ describe("Studio", () => {
     expect(screen.getByText("1 of 1")).toBeTruthy();
   });
 
+  it("keeps the note when a host fails and names only the hosts that succeeded", async () => {
+    const user = userEvent.setup();
+    const transport: Transport = async (id) => (id === "nexus" ? { ok: true } : { ok: false, message: "no" });
+    render(<Studio transport={transport} />);
+    await addMod(user, "Lanterns");
+    await user.click(screen.getByRole("button", { name: /Hosts/ }));
+    await user.click(screen.getByRole("button", { name: /Nexus Mods/ }));
+    await typeField(user, "API key", "secret");
+    await typeField(user, "Game domain", "site");
+    await typeField(user, "Mod ID", "1");
+    await user.click(screen.getByRole("button", { name: /CurseForge/ }));
+    await typeField(user, "Project ID", "1744552");
+    await typeField(user, "Game versions", "26.2");
+    await user.click(screen.getByRole("button", { name: /Hosts/ }));
+    await user.upload(document.querySelector('input[type="file"]') as HTMLInputElement, zip("test-mod.zip"));
+    const version = screen.getByRole("textbox", { name: "Version *" });
+    await user.clear(version);
+    await user.type(version, "0.0.5");
+    await user.type(screen.getByRole("textbox", { name: "Changelog *" }), "Softer glass.");
+    await user.click(screen.getByRole("button", { name: /Publish to/ }));
+    await user.click(screen.getByRole("tab", { name: "Notes" }));
+    expect(screen.getByRole("heading", { name: "Lanterns" })).toBeTruthy();
+    expect(screen.getByText("Softer glass.")).toBeTruthy();
+    const note = screen.getByRole("heading", { name: "Lanterns" }).parentElement?.parentElement;
+    expect(note?.textContent).toContain("Nexus Mods");
+    expect(note?.textContent).not.toContain("CurseForge");
+  });
+
   it("hides mod search until there are more than 20 mods", async () => {
     const user = userEvent.setup();
     render(<Studio transport={ok} />);
@@ -804,7 +832,7 @@ describe("Studio", () => {
       expect(screen.getByRole("link", { name: href }).getAttribute("href")).toBe(href);
     }
     await user.click(screen.getByRole("checkbox", { name: "Auto-zip" }));
-    expect(screen.getByText("Files that are not a zip are packed into one zip for hosts that need it.")).toBeTruthy();
+    expect(screen.getByText("Files that are not a zip are packed into one zip and sent to every host.")).toBeTruthy();
     await user.type(screen.getByRole("textbox", { name: "Zip name" }), "Bundle");
     await user.click(screen.getByRole("button", { name: "1" }));
     expect(screen.queryByRole("heading", { name: "Later" })).toBeNull();

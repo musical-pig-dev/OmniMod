@@ -577,8 +577,8 @@ export function releasePost(note: ReleaseNote): string {
   const version = note.version.trim();
   const notes = note.notes.trim();
   const places = note.links
-    .filter((link) => link.url.trim())
-    .map((link) => `${link.host}\n${link.url.trim()}`);
+    .map((link) => [link.host.trim(), link.url.trim()].filter(Boolean).join("\n"))
+    .filter(Boolean);
   return [name, version ? `Version ${version}` : "", notes, ...places].filter(Boolean).join("\n\n");
 }
 
@@ -667,9 +667,11 @@ export function ReleaseCard({ note, plain = false }: { note: ReleaseNote; plain?
           {note.links.map((link) => (
             <li key={`${link.host}-${link.url}`} className="border-b border-line px-1 py-3 last:border-b-0">
               <p className="text-sm text-ivory">{link.host}</p>
-              <a href={link.url} target="_blank" rel="noreferrer" className="mt-1 block break-all text-sm text-brass">
-                {link.url}
-              </a>
+              {link.url.trim() ? (
+                <a href={link.url} target="_blank" rel="noreferrer" className="mt-1 block break-all text-sm text-brass">
+                  {link.url}
+                </a>
+              ) : null}
             </li>
           ))}
         </ul>
@@ -1013,10 +1015,16 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
       });
       const shown = next.map((result) => withCurseForgePage(result, hostConfigs.curseforge.fields.projectId ?? ""));
       setResults(shown);
-      const links = shown.flatMap((result) =>
-        result.status === "success" && result.url ? [{ host: platformById(result.id).name, url: result.url }] : [],
-      );
-      setReleaseNote(links.length > 0 ? { name: active!.name, version, notes: input.changelog, links } : null);
+      const successes = shown.filter((result) => result.status === "success");
+      setReleaseNote({
+        name: active!.name,
+        version,
+        notes: input.changelog,
+        links: successes.map((result) => ({
+          host: platformById(result.id).name,
+          url: result.url?.trim() ?? "",
+        })),
+      });
       if (next.some((result) => result.status === "success")) {
         packageFile.current = null;
         packageFiles.current = [];
@@ -1189,7 +1197,7 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
                         className="h-11 w-full rounded-xl border border-line bg-ink px-3 text-sm outline-none placeholder:text-mist/70 focus:border-brass"
                       />
                       <p className="text-sm text-mist">
-                        Files that are not a zip are packed into one zip for hosts that need it.
+                        Files that are not a zip are packed into one zip and sent to every host.
                       </p>
                     </>
                   ) : null}
