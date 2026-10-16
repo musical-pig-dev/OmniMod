@@ -584,9 +584,6 @@ export type CurseFillResult =
   | { ok: true; url: string }
   | { ok: false; message: string; step?: string; reason?: string; filled?: string[]; logs?: string[] };
 
-const CURSE_AUTO = "Publish this file automatically once approved";
-const CURSE_MANUAL = "I would like to publish this file manually once approved";
-
 /** Field values for the authors form. A non-blank override wins. Names stay names. */
 export function curseForgeFormValues(args: {
   changelog: string;
@@ -807,6 +804,8 @@ export async function fillCurseForgePage(fill: CurseFormFill): Promise<CurseFill
 
   const filled: string[] = [];
   const logs: string[] = [];
+  const autoLabel = "Publish this file automatically once approved";
+  const manualLabel = "I would like to publish this file manually once approved";
 
   function note(action: string): void {
     logs.push(action);
@@ -868,7 +867,7 @@ export async function fillCurseForgePage(fill: CurseFormFill): Promise<CurseFill
     note("display name written");
   }
 
-  const choice = radioNamed(fill.manual ? CURSE_MANUAL : CURSE_AUTO);
+  const choice = radioNamed(fill.manual ? manualLabel : autoLabel);
   if (!choice) return miss("release", "no release option", "CurseForge form has no release option. The tab was left open.");
   choice.click();
   filled.push("release");

@@ -600,6 +600,12 @@ describe("curseForge authors form", () => {
     <button type="button">Add File</button>
   `;
 
+  it("keeps the release labels inside the injected function", () => {
+    const source = fillCurseForgePage.toString();
+    assert.match(source, /Publish this file automatically once approved/);
+    assert.match(source, /I would like to publish this file manually once approved/);
+  });
+
   it("maps host fields and lets a written override win", () => {
     const values = curseForgeFormValues({
       changelog: " Glass. ",

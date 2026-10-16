@@ -97,10 +97,7 @@ export function ResultSlip({ result, index }: { result: SiteResult; index: numbe
   const [open, setOpen] = useState(false);
   const [ticket, setTicket] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
-  const [draft, setDraft] = useState("");
-  const [savedLink, setSavedLink] = useState<string | null>(null);
   const title = ticketTitle(name, result);
-  const shown = savedLink ?? ticket;
 
   function fieldLabel(key: string): string {
     if (!platform) return key;
@@ -122,12 +119,6 @@ export function ResultSlip({ result, index }: { result: SiteResult; index: numbe
 
   function create() {
     window.open(ticketHref(title, ticketBody(result), result.id), "_blank", "noopener");
-  }
-
-  function saveLink() {
-    const href = draft.trim();
-    if (!href) return;
-    setSavedLink(href);
   }
 
   function download() {
@@ -222,30 +213,17 @@ export function ResultSlip({ result, index }: { result: SiteResult; index: numbe
               <button type="button" onClick={download} className="h-11 rounded-full border border-line px-4 text-ivory">
                 Download log
               </button>
-              {checking && !shown ? <p>Checking for an open ticket</p> : null}
-              {shown ? (
-                <a href={shown} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-brass">
+              {checking ? (
+                <p>Checking for an open ticket</p>
+              ) : ticket ? (
+                <a href={ticket} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-brass">
                   View Ticket
                   <ExternalLink className="size-3.5" aria-hidden="true" />
                 </a>
               ) : (
-                <div className="grid gap-2">
-                  <button type="button" onClick={create} className="h-11 rounded-full bg-brass px-4 text-ink">
-                    Create Ticket
-                  </button>
-                  <label className="grid gap-1 text-ivory">
-                    Issue link
-                    <input
-                      aria-label="Issue link"
-                      value={draft}
-                      onChange={(event) => setDraft(event.target.value)}
-                      className="h-11 rounded-xl border border-line bg-ink px-3 text-ivory"
-                    />
-                  </label>
-                  <button type="button" onClick={saveLink} className="h-11 rounded-full border border-line px-4 text-ivory">
-                    Save issue link
-                  </button>
-                </div>
+                <button type="button" onClick={create} className="h-11 rounded-full bg-brass px-4 text-ink">
+                  Create Ticket
+                </button>
               )}
             </div>
           ) : null}

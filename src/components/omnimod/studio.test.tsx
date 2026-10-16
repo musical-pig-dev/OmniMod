@@ -475,17 +475,8 @@ describe("Studio", () => {
     expect(String(open.mock.calls[0]?.[0])).toContain("https://github.com/musical-pig-dev/OmniMod/issues/new");
     expect(String(open.mock.calls[0]?.[0])).toContain("OmniMod");
     expect(open.mock.calls[0]?.[2]).toBe("noopener");
-    const box = screen.getByLabelText("Issue link");
-    await user.type(box, "   ");
-    await user.click(screen.getByRole("button", { name: "Save issue link" }));
-    expect(screen.queryByRole("link", { name: "View Ticket" })).toBeNull();
-    await user.clear(box);
-    await user.type(box, "  https://github.com/musical-pig-dev/OmniMod/issues/12  ");
-    await user.click(screen.getByRole("button", { name: "Save issue link" }));
-    expect(screen.getByRole("link", { name: "View Ticket" }).getAttribute("href")).toBe(
-      "https://github.com/musical-pig-dev/OmniMod/issues/12",
-    );
     expect(screen.queryByLabelText("Issue link")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save issue link" })).toBeNull();
     open.mockRestore();
     cleanup();
 
