@@ -146,6 +146,7 @@ describe("catalog", () => {
     assert.equal(conflict.hosts, 0);
     assert.equal(typeLock(clash)?.length, 0);
     assert.equal(typeBlock(platformById("modrinth"), clash, ""), "These hosts do not accept the same file type.");
+    assert.equal(typeBlock(platformById("modrinth"), clash, "", true), null);
     assert.equal(typeBlock(platformById("github"), clash, ""), null);
     const nexusReady = defaultConfigs();
     nexusReady.nexus = nexusOnly.nexus;

@@ -333,7 +333,7 @@ describe("runPublish", () => {
     assert.equal(deliveryFile("nexus", { ...base, autoZip: false }, original, packed, [{ name: "mod.jar", blob: jar }]), original);
     assert.equal(deliveryFile("nexus", base, original, packed, []), original);
     assert.equal(deliveryFile("github", base, original, packed, [{ name: "mod.jar", blob: jar }]), packed);
-    assert.equal(deliveryFile("modrinth", base, original, packed, [{ name: "mod.jar", blob: jar }]), packed);
+    assert.equal(deliveryFile("modrinth", base, original, packed, [{ name: "mod.jar", blob: jar }]), jar);
     assert.equal(deliveryFile("nexus", base, original, packed, [{ name: "mod.jar", blob: jar }]), packed);
     assert.equal(deliveryFile("nexus", base, original, null, [{ name: "mod.jar", blob: jar }]), original);
     assert.equal(deliveryFile("modrinth", base, original, packed, [{ name: "notes.txt", blob: jar }]), packed);
@@ -378,11 +378,11 @@ describe("runPublish", () => {
       },
     });
     assert.equal(seen.nexus, packed);
-    assert.equal(seen.modrinth, packed);
+    assert.equal(seen.modrinth, jar);
     assert.equal(seen.github, packed);
     assert.equal(names.curseforge, undefined);
     assert.equal(names.nexus, "mod.zip");
-    assert.equal(names.modrinth, "mod.zip");
+    assert.equal(names.modrinth, "mod.jar");
     assert.equal(names.github, "mod.zip");
     let curseName = "";
     await runPublish({

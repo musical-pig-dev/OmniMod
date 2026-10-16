@@ -209,6 +209,9 @@ export function deliveryFile(
   if (!input.autoZip || sources.length === 0) return file;
   const first = sources[0];
   if (sources.length === 1 && fileExtension(first.name) === ".zip") return first.blob;
+  const accepts = platformById(_id).accepts;
+  const ext = fileExtension(first.name);
+  if (sources.length === 1 && accepts && !accepts.includes(".zip") && accepts.includes(ext)) return first.blob;
   return preferZip(zip, file);
 }
 

@@ -348,6 +348,7 @@ export function typeBlock(platform: Platform, configs: ConfigMap, fileName: stri
     return `Accepts ${accepts.join(", ")}. This file is ${ext}.`;
   }
   if (autoZip && accepts?.includes(".zip")) return null;
+  if (autoZip && accepts?.includes(".jar")) return null;
   const lock = typeLock(configs);
   if (lock == null || !accepts?.length) return null;
   if (lock.length === 0) return "These hosts do not accept the same file type.";
