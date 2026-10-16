@@ -17,11 +17,11 @@ import {
 import {
   PLATFORMS,
   acceptFiles,
-  acceptLabel,
   curseForgeOnForm,
   defaultConfigs,
   fileExtension,
   hostLimitDetail,
+  hostMuted,
   isConfigured,
   platformById,
   typeBlock,
@@ -403,6 +403,7 @@ export function SiteCard({
   onToggleOpen,
   onChange,
   blocked = null,
+  muted = false,
 }: {
   platform: Platform;
   config: PlatformConfig;
@@ -410,14 +411,16 @@ export function SiteCard({
   onToggleOpen: () => void;
   onChange: (next: PlatformConfig) => void;
   blocked?: string | null;
+  muted?: boolean;
 }) {
   const fields = platform.fields;
   const locked = Boolean(platform.later || blocked);
   const saved = isConfigured(platform, config);
   const hasValue = fields.some((field) => (config.fields[field.key] ?? "").trim().length > 0);
   const panelId = useId();
+  const note = muted ? null : blocked;
   return (
-    <article className={`rounded-card border border-line bg-panel ${blocked ? "opacity-80" : ""}`}>
+    <article className={`rounded-card border border-line ${muted ? "border-line/40 bg-ink opacity-40" : "bg-panel"} ${!muted && blocked ? "opacity-80" : ""}`}>
       <div className="flex items-center gap-3 px-4 py-3">
         <button
           type="button"
@@ -437,8 +440,23 @@ export function SiteCard({
             </span>
             <span className="mt-1 block text-sm leading-relaxed text-mist">{platform.summary}</span>
             <span className="mt-1 block text-sm text-mist">{hostLimitDetail(platform.id)}</span>
-            <span className="mt-1 block text-sm text-mist">{acceptLabel(platform)}</span>
-            {blocked ? <span className="mt-1 block text-sm text-bad">{blocked}</span> : null}
+            <span className="mt-1 block text-sm text-mist">
+              {platform.accepts?.length ? (
+                <>
+                  Accepts{" "}
+                  {platform.accepts.map((ext, index) => (
+                    <span key={ext}>
+                      {index > 0 ? ", " : null}
+                      <span className="font-medium text-brass">{ext}</span>
+                    </span>
+                  ))}
+                  .
+                </>
+              ) : (
+                "Accepts any file type."
+              )}
+            </span>
+            {note ? <span className="mt-1 block text-sm text-bad">{note}</span> : null}
           </span>
           <CredentialMark saved={saved && !locked} />
           <ChevronDown
@@ -1365,6 +1383,7 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
                         config={active.configs[platform.id]}
                         open={openId === platform.id}
                         blocked={typeBlock(platform, active.configs, active.fileName, active.autoZip)}
+                        muted={hostMuted(platform, active.configs, active.autoZip)}
                         onToggleOpen={() =>
                           setOpenId((current) => (current === platform.id ? null : platform.id))
                         }

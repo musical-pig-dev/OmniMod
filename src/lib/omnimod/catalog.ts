@@ -319,6 +319,25 @@ export function typeLock(configs: ConfigMap): string[] | null {
   return lists.reduce((shared, list) => shared.filter((ext) => list.includes(ext)));
 }
 
+function sharesType(left: readonly string[], right: readonly string[], autoZip: boolean): boolean {
+  if (left.some((ext) => right.includes(ext))) return true;
+  if (!autoZip) return false;
+  const zip = (list: readonly string[]) => list.includes(".zip");
+  const jar = (list: readonly string[]) => list.includes(".jar");
+  return (zip(left) && jar(right)) || (jar(left) && zip(right));
+}
+
+export function hostMuted(platform: Platform, configs: ConfigMap, autoZip = false): boolean {
+  if (platform.lane === "later" || !platform.accepts?.length) return false;
+  const others = PLATFORMS.filter((item) => {
+    if (item.id === platform.id || item.lane === "later" || !item.accepts?.length) return false;
+    const config = configs[item.id];
+    return config.enabled && isConfigured(item, config);
+  });
+  if (others.length === 0) return false;
+  return others.every((item) => !sharesType(platform.accepts as string[], item.accepts as string[], autoZip));
+}
+
 export function typeBlock(platform: Platform, configs: ConfigMap, fileName: string, autoZip = false): string | null {
   if (platform.lane === "later") return null;
   const accepts = platform.accepts;

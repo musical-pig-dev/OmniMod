@@ -8,6 +8,7 @@ import {
   fieldValue,
   fileExtension,
   hostLimitDetail,
+  hostMuted,
   isConfigured,
   modFields,
   platformById,
@@ -146,6 +147,22 @@ describe("catalog", () => {
     assert.equal(typeLock(clash)?.length, 0);
     assert.equal(typeBlock(platformById("modrinth"), clash, ""), "These hosts do not accept the same file type.");
     assert.equal(typeBlock(platformById("github"), clash, ""), null);
+    const nexusReady = defaultConfigs();
+    nexusReady.nexus = nexusOnly.nexus;
+    const jarReady = defaultConfigs();
+    jarReady.modrinth = {
+      enabled: true,
+      fields: Object.fromEntries(platformById("modrinth").fields.map((field) => [field.key, "set"])),
+    };
+    assert.equal(hostMuted(platformById("modrinth"), nexusReady, false), true);
+    assert.equal(hostMuted(platformById("modrinth"), nexusReady, true), false);
+    assert.equal(hostMuted(platformById("nexus"), jarReady, false), true);
+    assert.equal(hostMuted(platformById("nexus"), jarReady, true), false);
+    assert.equal(hostMuted(platformById("github"), nexusReady, false), false);
+    assert.equal(hostMuted(platformById("steam"), nexusReady, false), false);
+    assert.equal(hostMuted(platformById("modrinth"), defaultConfigs(), false), false);
+    assert.equal(hostMuted({ ...platformById("nexus"), accepts: [".txt"] }, jarReady, true), true);
+    assert.equal(hostMuted({ ...platformById("thunderstore"), accepts: [".jar"] }, nexusReady, true), false);
     assert.match(typeBlock(platformById("nexus"), githubFirst, "") ?? "", /ready hosts need \.jar/);
     assert.match(typeBlock(platformById("curseforge"), githubFirst, "") ?? "", /ready hosts need \.jar/);
     assert.match(typeBlock(platformById("modrinth"), githubFirst, "lanterns.zip") ?? "", /This file is \.zip/);

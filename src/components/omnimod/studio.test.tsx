@@ -330,9 +330,15 @@ describe("Studio", () => {
     expect(screen.getByRole("heading", { name: "API" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Bot" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Later" })).toBeTruthy();
-    expect(screen.getByText("Accepts .zip, .rar, .7z. The ready hosts need .jar.")).toBeTruthy();
+    const nexusCard = screen.getByRole("button", { name: /Nexus Mods/ }).closest("article");
+    expect(nexusCard?.className).toContain("opacity-40");
+    expect(screen.queryByText(/The ready hosts need/)).toBeNull();
     await user.click(screen.getByRole("button", { name: /Nexus Mods/ }));
     expect(screen.getByLabelText("API key")).toHaveProperty("disabled", true);
+    await user.click(screen.getByRole("checkbox", { name: "Auto-zip" }));
+    expect(screen.getByText(".jar").className).toContain("text-brass");
+    expect(nexusCard?.className).not.toContain("opacity-40");
+    await user.click(screen.getByRole("checkbox", { name: "Auto-zip" }));
     await user.click(screen.getByRole("button", { name: /Hosts/ }));
     expect(screen.getByText("More than one file is allowed. Largest file 500 MiB.")).toBeTruthy();
     const huge = new File(["x"], "huge.jar");
