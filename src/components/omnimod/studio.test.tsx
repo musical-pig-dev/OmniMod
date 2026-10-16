@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SiteResult, Transport } from "@/lib/omnimod/publish";
 import { ticketTitle } from "@/lib/omnimod/publish";
 import { Delivery, ReleaseCard, ResultDeck, ResultSlip, SiteCard, Studio } from "./studio";
@@ -11,6 +11,10 @@ import { MODS_KEY } from "@/lib/omnimod/storage";
 import * as vault from "@/lib/omnimod/vault";
 
 const ok: Transport = async () => ({ ok: true });
+
+beforeEach(() => {
+  localStorage.setItem("omnimod-intro-v7", "1");
+});
 
 afterEach(() => {
   cleanup();
@@ -32,6 +36,45 @@ async function typeField(user: ReturnType<typeof userEvent.setup>, label: string
 }
 
 describe("Studio", () => {
+  it("plays the first run once, then opens the studio", () => {
+    localStorage.removeItem("omnimod-intro-v7");
+    let tick: (() => void) | undefined;
+    const originalTimeout = window.setTimeout;
+    const originalClear = window.clearTimeout;
+    window.setTimeout = ((fn: () => void) => {
+      tick = fn;
+      return 1;
+    }) as typeof window.setTimeout;
+    window.clearTimeout = (() => undefined) as typeof window.clearTimeout;
+    try {
+      const line = () => document.querySelector(".intro-in p, .intro-out p")?.textContent ?? "";
+      const view = render(<Studio transport={ok} />);
+      expect(line()).toBe("OmniMod.");
+      expect(screen.getByText("© 2026 Musical Pig LLC")).toBeTruthy();
+      expect(document.querySelector(".intro-in")).toBeTruthy();
+      const step = () => act(() => tick?.());
+      step();
+      expect(line()).toBe("One archive.");
+      step();
+      expect(line()).toBe("One publish.");
+      step();
+      expect(line()).toBe("Multi-host made easy.");
+      step();
+      expect(line()).toBe("Welcome.");
+      expect(line()).not.toContain("One archive");
+      step();
+      expect(document.querySelector(".intro-out")).toBeTruthy();
+      expect(line()).toBe("Welcome.");
+      step();
+      expect(localStorage.getItem("omnimod-intro-v7")).toBe("1");
+      expect(document.querySelector(".intro-in, .intro-out")).toBeNull();
+      view.unmount();
+    } finally {
+      window.setTimeout = originalTimeout;
+      window.clearTimeout = originalClear;
+    }
+  });
+
   it("shows a local revision until a pipeline hash is baked in", () => {
     render(<Studio transport={ok} />);
     expect(screen.getByText("local").tagName).toBe("SPAN");

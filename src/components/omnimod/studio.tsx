@@ -67,6 +67,59 @@ import {
   type Transport,
 } from "@/lib/omnimod/publish";
 
+const INTRO_KEY = "omnimod-intro-v7";
+
+const INTRO_LINES = [
+  "OmniMod.",
+  "One archive.",
+  "One publish.",
+  "Multi-host made easy.",
+  "Welcome.",
+];
+
+function FirstRun({ onDone }: { onDone: () => void }) {
+  const done = useRef(onDone);
+  const [index, setIndex] = useState(0);
+  const [leaving, setLeaving] = useState(false);
+  done.current = onDone;
+
+  useEffect(() => {
+    const fast = index === 1 || index === 2;
+    const id = window.setTimeout(
+      () => {
+        if (leaving) done.current();
+        else if (index >= INTRO_LINES.length - 1) setLeaving(true);
+        else setIndex((value) => value + 1);
+      },
+      leaving ? 1000 : fast ? 1500 : 2800,
+    );
+    return () => window.clearTimeout(id);
+  }, [index, leaving]);
+
+  const line = INTRO_LINES[index];
+
+  return (
+    <div className={`fixed inset-0 z-30 grid place-items-center bg-ink px-6 ${leaving ? "intro-out" : ""}`}>
+      <div className={`relative grid size-[min(28rem,86vw)] place-items-center text-brass ${leaving ? "" : "intro-in"}`}>
+        <span className="absolute inset-0 rounded-full border border-brass shadow-[0_0_48px_rgba(212,160,84,0.28)]" />
+        <span className="absolute inset-0 grid place-items-center">
+          <span className="flex w-[62%] flex-col items-center gap-5 text-center">
+            <Gamepad2 className="size-24" strokeWidth={1.5} aria-hidden="true" />
+            <p key={line} className="intro-line min-h-16 text-lg leading-relaxed text-ivory">
+              {line}
+            </p>
+          </span>
+        </span>
+        {[0, 1, 2].map((item) => (
+          <span key={item} className="intro-orbit absolute inset-0" style={{ animationDelay: `${item * -3}s` }}>
+            <Package className="absolute top-0 left-1/2 size-5 -translate-x-1/2 -translate-y-1/2" aria-hidden="true" />
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function Mark() {
   return (
     <span
@@ -838,6 +891,7 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
   const [shippedName, setShippedName] = useState("");
   const [releaseNote, setReleaseNote] = useState<ReleaseNote | null>(null);
   const [folder, setFolder] = useState<"delivery" | "notes">("delivery");
+  const [intro, setIntro] = useState(() => localStorage.getItem(INTRO_KEY) !== "1");
 
   const active = mods.find((mod) => mod.id === activeId) ?? mods[0];
   const hostConfigs = active?.configs ?? defaultConfigs();
@@ -1494,6 +1548,14 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
             <Lock className="size-5" aria-hidden="true" />
           </span>
         )}
+        {intro ? (
+          <FirstRun
+            onDone={() => {
+              localStorage.setItem(INTRO_KEY, "1");
+              setIntro(false);
+            }}
+          />
+        ) : null}
         <RevisionLink />
         </div>
       </div>

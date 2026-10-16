@@ -19,7 +19,7 @@ export function RevisionLink({
     <span className={className}>{label}</span>
   );
   return (
-    <div className="fixed right-3 bottom-3 z-20 flex items-center gap-3">
+    <div className="fixed right-3 bottom-3 z-40 flex items-center gap-3">
       <a
         href="https://www.musical-pig.com"
         target="_blank"
