@@ -86,7 +86,7 @@ export function publicHostConfig(
   const secrets = new Set(platformById(id).fields.filter((field) => field.secret).map((field) => field.key));
   const config: Record<string, string> = {};
   for (const [key, value] of Object.entries(fields)) {
-    if (!value.trim() || secrets.has(key) || /token|key|secret|password|cookie/i.test(key)) continue;
+    if (!value.trim() || value.trim().startsWith("data:") || secrets.has(key) || /token|key|secret|password|cookie/i.test(key)) continue;
     config[key] = value;
   }
   return Object.keys(config).length ? config : undefined;
@@ -315,6 +315,66 @@ export async function runPublish(args: {
   }
 
   return results;
+}
+
+export async function publishOne(args: {
+  id: PlatformId;
+  input: PublishInput;
+  configs: ConfigMap;
+  transport: Transport;
+  file?: Blob | null;
+  zip?: Blob | null;
+  sources?: { name: string; blob: Blob }[];
+}): Promise<SiteResult> {
+  const name = platformById(args.id).name;
+  const file = args.file ?? args.input.file ?? null;
+  const zip = args.zip ?? null;
+  const sources = args.sources ?? [];
+  try {
+    const blob = deliveryFile(args.id, args.input, file, zip, sources);
+    if (!blob) {
+      return {
+        id: args.id,
+        status: "error",
+        message: "Choose the package again.",
+        step: "package",
+        reason: "Choose the package again.",
+      };
+    }
+    const sent = { ...args.input, file: blob, fileName: sentName(args.input, blob, zip) };
+    const response = await args.transport(args.id, { ...sent, fields: args.configs[args.id].fields });
+    if (response.ok) {
+      const extra = response.detail ? ` ${response.detail}` : "";
+      const url = response.url?.trim() ?? "";
+      return {
+        id: args.id,
+        status: "success",
+        message: `${successMessage(args.id, args.input)}${extra}`,
+        ...(url ? { url } : {}),
+      };
+    }
+    return {
+      id: args.id,
+      status: "error",
+      message: response.message || `${name} rejected the upload.`,
+      ...(response.step ? { step: response.step } : {}),
+      ...(response.reason ? { reason: response.reason } : {}),
+      ...(response.filled && response.filled.length > 0 ? { filled: response.filled } : {}),
+      ...(response.logs && response.logs.length > 0 ? { logs: response.logs } : {}),
+      ...failureFacts(args.id, sent, args.configs),
+    };
+  } catch (error) {
+    const detail = error instanceof Error && error.message ? error.message : "Request failed.";
+    return {
+      id: args.id,
+      status: "error",
+      message: `${name}: ${detail}`,
+      step: "exception",
+      reason: detail,
+      logs: [`exception: ${detail}`],
+      ...failureFacts(args.id, args.input, args.configs),
+    };
+  }
 }
 
 const PRACTICE: Record<string, string> = {

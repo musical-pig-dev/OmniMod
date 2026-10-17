@@ -6,11 +6,13 @@ import {
   type PlatformId,
 } from "./catalog.ts";
 import { hydrateMod, type ModRecord } from "./mods.ts";
+import { readDeploymentList, type Deployment } from "./history.ts";
 import type { PublishInput, Transport } from "./publish.ts";
 
 export const STORAGE_KEY = "omnimod-configs-v1";
 export const MODS_KEY = "omnimod-mods-v3";
 export const ACTIVE_KEY = "omnimod-active-mod-v3";
+export const DEPLOY_KEY = "omnimod-deploys-v1";
 
 export function formatBytes(size: number): string {
   if (size < 1024) return `${size} B`;
@@ -62,6 +64,17 @@ export function loadLibrary(
     return empty();
   }
   return empty();
+}
+
+export function loadDeployments(storage: Pick<Storage, "getItem"> | null = globalThis.localStorage): Deployment[] {
+  if (!storage) return [];
+  try {
+    const raw = storage.getItem(DEPLOY_KEY);
+    if (!raw) return [];
+    return readDeploymentList(JSON.parse(raw));
+  } catch {
+    return [];
+  }
 }
 
 export function studioDelay(id: string): number {

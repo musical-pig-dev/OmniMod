@@ -3,10 +3,12 @@ import { describe, it } from "vitest";
 import { defaultConfigs } from "./catalog.ts";
 import { createMod } from "./mods.ts";
 import {
+  DEPLOY_KEY,
   ACTIVE_KEY,
   MODS_KEY,
   formatBytes,
   loadConfigs,
+  loadDeployments,
   loadLibrary,
   studioDelay,
   studioResponse,
@@ -74,6 +76,22 @@ describe("storage", () => {
     const notArray = loadLibrary(defaultConfigs(), memoryStorage({ [MODS_KEY]: "{}" }));
     assert.equal(notArray.mods.length, 0);
     assert.equal(loadLibrary(defaultConfigs(), undefined).mods.length, 0);
+    assert.deepEqual(loadDeployments(null), []);
+    assert.deepEqual(loadDeployments(memoryStorage()), []);
+    assert.deepEqual(loadDeployments(memoryStorage({ [DEPLOY_KEY]: "{" })), []);
+    const kept = loadDeployments(
+      memoryStorage({
+        [DEPLOY_KEY]: JSON.stringify([
+          {
+            id: "d1",
+            mod: "Lanterns",
+            hosts: [{ id: "nexus", status: "success", name: "Nexus Mods" }],
+          },
+        ]),
+      }),
+    );
+    assert.equal(kept[0]?.mod, "Lanterns");
+    assert.deepEqual(loadDeployments(memoryStorage({ [DEPLOY_KEY]: "null" })), []);
   });
 
   it("answers the rehearsal transport", async () => {

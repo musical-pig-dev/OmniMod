@@ -158,6 +158,9 @@ describe("mods", () => {
     mod.configs.thunderstore.fields.icon = "data:image/png;base64,abc";
     const library = libraryFile([mod]);
     assert.equal(library.kind, "omnimod-library");
+    assert.deepEqual(library.deployments, []);
+    const withDeploys = libraryFile([mod], [{ id: "d1" } as never]);
+    assert.equal(withDeploys.deployments.length, 1);
     assert.equal(readLibraryFile(library)?.[0]?.configs.nexus.fields.apiKey, "secret");
     assert.equal(readLibraryFile(library)?.[0]?.name, "Lanterns");
     assert.equal(readLibraryFile(library)?.[0]?.autoZip, true);

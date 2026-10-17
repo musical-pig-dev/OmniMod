@@ -9,7 +9,8 @@
     "build:chrome": "vite build --config vite.chrome.config.ts",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "dev:sample": "VITE_OMNIMOD_SAMPLE=1 vite --config vite.chrome.config.ts"
   },
   "dependencies": {
     "@tanstack/react-router": "1.131.50",

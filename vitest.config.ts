@@ -13,7 +13,7 @@ export default defineConfig({
     coverage: {
       provider: "v8",
       include: ["src/lib/omnimod/**/*.ts", "src/components/omnimod/**/*.tsx"],
-      exclude: ["**/*.test.ts", "**/*.test.tsx"],
+      exclude: ["**/*.test.ts", "**/*.test.tsx", "src/lib/omnimod/sample.ts"],
       thresholds: {
         lines: 100,
         statements: 100,

@@ -1,9 +1,10 @@
 import { defaultConfigs } from "./catalog.ts";
+import { readDeploymentList, type Deployment } from "./history.ts";
 import { hydrateMod, type ModRecord } from "./mods.ts";
 
 export const VAULT_KEY = "omnimod-vault-v3";
 
-export type VaultPayload = { mods: ModRecord[]; activeId: string };
+export type VaultPayload = { mods: ModRecord[]; activeId: string; deployments?: Deployment[] };
 
 type Sealed = { v: 1; iv: string; data: string };
 
@@ -50,14 +51,14 @@ export async function seal(key: CryptoKey, payload: VaultPayload): Promise<strin
   return sealValue(key, payload);
 }
 
-export function readPayload(value: unknown): VaultPayload | null {
+export function readPayload(value: unknown): (VaultPayload & { deployments: Deployment[] }) | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as { mods?: unknown; activeId?: unknown };
   if (!Array.isArray(raw.mods)) return null;
   const configs = defaultConfigs();
   const mods = raw.mods.map((mod) => hydrateMod(mod as ModRecord, configs));
   const activeId = typeof raw.activeId === "string" && mods.some((mod) => mod.id === raw.activeId) ? raw.activeId : (mods[0]?.id ?? "");
-  return { mods, activeId };
+  return { mods, activeId, deployments: readDeploymentList(value) };
 }
 
 export function sealedRecord(value: unknown): boolean {

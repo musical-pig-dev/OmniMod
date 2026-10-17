@@ -1,15 +1,23 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Studio } from "./studio";
 import { UnlockKeys } from "./vault-lock";
+import { resetBugLookup } from "@/lib/omnimod/bugs";
 import { createMod } from "@/lib/omnimod/mods";
 import { MODS_KEY } from "@/lib/omnimod/storage";
 import { VAULT_KEY } from "@/lib/omnimod/vault";
 
+beforeEach(() => {
+  resetBugLookup();
+  vi.stubGlobal("fetch", async () => ({ ok: true, json: async () => ({ total_count: 0, items: [] }) }));
+});
+
 afterEach(() => {
   cleanup();
   localStorage.clear();
+  vi.unstubAllGlobals();
+  resetBugLookup();
 });
 
 describe("key protection", () => {
