@@ -4,8 +4,6 @@ What this adds or fixes.
 
 ## Screenshots
 
-Tests
-
-Lint
+Tests / Lint via `npm run check`
 
 Feature
