@@ -277,6 +277,158 @@ async function publishGitHub(
   return { ok: true, url: `https://github.com/${repo}/releases` };
 }
 
+export type ThunderstorePageJob = {
+  token: string;
+  team: string;
+  community: string;
+  categories: string[];
+  fileName: string;
+  bytes: number[];
+};
+
+export type ThunderstorePageResult = { ok: true; message?: string } | { ok: false; message: string };
+
+/** Runs inside a thunderstore.io tab. That origin is the only one their API allows. */
+export async function uploadThunderstoreInPage(job: ThunderstorePageJob): Promise<ThunderstorePageResult> {
+  function md5(input: Uint8Array): Uint8Array {
+    const shift = [
+      7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14,
+      20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6,
+      10, 15, 21,
+    ];
+    const sine = new Uint32Array(64);
+    for (let index = 0; index < 64; index += 1) sine[index] = Math.floor(Math.abs(Math.sin(index + 1)) * 0x100000000);
+    let length = input.length + 1;
+    while (length % 64 !== 56) length += 1;
+    const padded = new Uint8Array(length + 8);
+    padded.set(input);
+    padded[input.length] = 0x80;
+    const view = new DataView(padded.buffer);
+    const bits = input.length * 8;
+    view.setUint32(padded.length - 8, bits >>> 0, true);
+    view.setUint32(padded.length - 4, Math.floor(bits / 0x100000000), true);
+    let a0 = 0x67452301;
+    let b0 = 0xefcdab89;
+    let c0 = 0x98badcfe;
+    let d0 = 0x10325476;
+    const words = new Uint32Array(16);
+    for (let offset = 0; offset < padded.length; offset += 64) {
+      for (let index = 0; index < 16; index += 1) words[index] = view.getUint32(offset + index * 4, true);
+      let a = a0;
+      let b = b0;
+      let c = c0;
+      let d = d0;
+      for (let index = 0; index < 64; index += 1) {
+        let mixed = 0;
+        let source = 0;
+        if (index < 16) {
+          mixed = (b & c) | (~b & d);
+          source = index;
+        } else if (index < 32) {
+          mixed = (d & b) | (~d & c);
+          source = (5 * index + 1) % 16;
+        } else if (index < 48) {
+          mixed = b ^ c ^ d;
+          source = (3 * index + 5) % 16;
+        } else {
+          mixed = c ^ (b | ~d);
+          source = (7 * index) % 16;
+        }
+        mixed = (mixed + a + sine[index] + words[source]) >>> 0;
+        a = d;
+        d = c;
+        c = b;
+        b = (b + ((mixed << shift[index]) | (mixed >>> (32 - shift[index])))) >>> 0;
+      }
+      a0 = (a0 + a) >>> 0;
+      b0 = (b0 + b) >>> 0;
+      c0 = (c0 + c) >>> 0;
+      d0 = (d0 + d) >>> 0;
+    }
+    const digest = new Uint8Array(16);
+    const state = [a0, b0, c0, d0];
+    for (let index = 0; index < 4; index += 1) {
+      digest[index * 4] = state[index] & 0xff;
+      digest[index * 4 + 1] = (state[index] >>> 8) & 0xff;
+      digest[index * 4 + 2] = (state[index] >>> 16) & 0xff;
+      digest[index * 4 + 3] = (state[index] >>> 24) & 0xff;
+    }
+    return digest;
+  }
+
+  function contentMd5(chunk: Uint8Array): string {
+    let binary = "";
+    const digest = md5(chunk);
+    for (const byte of digest) binary += String.fromCharCode(byte);
+    return btoa(binary);
+  }
+
+  async function readError(response: Response): Promise<string> {
+    const text = (await response.text()).trim();
+    if (!text) return `Thunderstore returned HTTP ${response.status}.`;
+    try {
+      const body = JSON.parse(text) as { detail?: string; message?: string; error?: string };
+      return body.detail || body.message || body.error || text.slice(0, 280);
+    } catch {
+      return text.slice(0, 280);
+    }
+  }
+
+  try {
+    const bytes = new Uint8Array(job.bytes);
+    const headers = { authorization: `Bearer ${job.token}`, accept: "application/json", "content-type": "application/json" };
+    const started = await fetch("https://thunderstore.io/api/experimental/usermedia/initiate-upload/", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ filename: job.fileName || "package.zip", file_size_bytes: bytes.length }),
+    });
+    if (!started.ok) return { ok: false, message: await readError(started) };
+    let session: { user_media?: { uuid?: string }; upload_urls?: Array<Record<string, unknown>> };
+    try {
+      session = (await started.json()) as typeof session;
+    } catch {
+      return { ok: false, message: "Thunderstore did not return an upload slot." };
+    }
+    const uuid = String(session.user_media?.uuid ?? "");
+    const parts = Array.isArray(session.upload_urls) ? session.upload_urls : [];
+    if (!uuid || parts.length === 0) return { ok: false, message: "Thunderstore did not return an upload slot." };
+    const completed: { PartNumber: number; ETag: string }[] = [];
+    for (const part of parts) {
+      const url = String(part.url ?? "");
+      const number = Number(part.part_number ?? part.PartNumber ?? 0);
+      const offset = Number(part.offset ?? 0);
+      const length = Number(part.length ?? bytes.length);
+      if (!url || !number) return { ok: false, message: "Thunderstore did not return an upload slot." };
+      const chunk = bytes.subarray(offset, Math.min(offset + length, bytes.length));
+      const put = await fetch(url, { method: "PUT", headers: { "Content-MD5": contentMd5(chunk) }, body: chunk });
+      if (!put.ok) return { ok: false, message: await readError(put) };
+      completed.push({ PartNumber: number, ETag: (put.headers.get("etag") ?? "").replace(/"/g, "") });
+    }
+    const finished = await fetch(`https://thunderstore.io/api/experimental/usermedia/${uuid}/finish-upload/`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ parts: completed }),
+    });
+    if (!finished.ok) return { ok: false, message: await readError(finished) };
+    const submitted = await fetch("https://thunderstore.io/api/experimental/submission/submit/", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        upload_uuid: uuid,
+        author_name: job.team,
+        communities: [job.community],
+        community_categories: { [job.community]: job.categories },
+        has_nsfw_content: false,
+      }),
+    });
+    if (!submitted.ok) return { ok: false, message: await readError(submitted) };
+    return { ok: true };
+  } catch (error) {
+    const detail = error instanceof Error && error.message ? error.message : "Failed to fetch";
+    return { ok: false, message: detail === "Failed to fetch" ? "Thunderstore storage refused the upload." : detail };
+  }
+}
+
 async function publishThunderstore(
   fetchImpl: typeof fetch,
   input: PublishInput,
@@ -294,6 +446,25 @@ async function publishThunderstore(
   const community = (fields.community ?? "").trim();
   if (!community) return { ok: false, message: "Thunderstore needs a community slug." };
   const bytes = new Uint8Array(await packed.arrayBuffer());
+  if (typeof chromeApi()?.scripting?.executeScript === "function") {
+    const storedName = packed instanceof File && packed.name.trim() ? packed.name.trim() : input.fileName || "package.zip";
+    const uploaded = await publishThunderstoreFromTab({
+      token,
+      team,
+      community,
+      categories: splitList(fields.categories),
+      fileName: storedName,
+      bytes: Array.from(bytes),
+    });
+    if (!uploaded.ok) return { ok: false, message: uploaded.message || "Thunderstore rejected the upload." };
+    const named = packageName(new TextDecoder("latin1").decode(bytes));
+    if (!team || !named) return { ok: true, detail: team };
+    return {
+      ok: true,
+      detail: team,
+      url: `https://thunderstore.io/c/${encodeURIComponent(community)}/p/${encodeURIComponent(team)}/${encodeURIComponent(named)}/`,
+    };
+  }
   const started = await fetchImpl("https://thunderstore.io/api/experimental/usermedia/initiate-upload/", {
     method: "POST",
     headers: thunderstoreHeaders(token),
@@ -507,6 +678,37 @@ export type CurseTabDriver = {
 
 function chromeApi(): ChromeApi | null {
   return (globalThis as { chrome?: ChromeApi }).chrome ?? null;
+}
+
+async function publishThunderstoreFromTab(job: ThunderstorePageJob): Promise<ThunderstorePageResult> {
+  const api = chromeApi() as ChromeApi;
+  const tabs = api.tabs;
+  if (!tabs || typeof tabs.create !== "function") return { ok: false, message: "Thunderstore could not open a tab." };
+  let tabId: number | null = null;
+  const finish = async (result: ThunderstorePageResult): Promise<ThunderstorePageResult> => {
+    if (tabId != null && typeof tabs.remove === "function") {
+      try {
+        await tabs.remove(tabId);
+      } catch {
+        /* the request already finished */
+      }
+    }
+    return result;
+  };
+  try {
+    const tab = await tabs.create({ url: "https://thunderstore.io/", active: false });
+    if (tab?.id == null) return finish({ ok: false, message: "Thunderstore could not open a tab." });
+    tabId = tab.id;
+    await waitUntilReady(api, tabId);
+    const execute = api.scripting!.executeScript!;
+    const packed = await execute({ target: { tabId }, world: "MAIN", func: uploadThunderstoreInPage, args: [job] });
+    const result = packed?.[0]?.result;
+    if (!result || typeof result.ok !== "boolean") return finish({ ok: false, message: "Thunderstore did not answer." });
+    return finish(result);
+  } catch (error) {
+    const detail = error instanceof Error && error.message ? error.message : "The tab could not be opened.";
+    return finish({ ok: false, message: `Thunderstore could not open a tab. ${detail}` });
+  }
 }
 
 async function waitUntilReady(api: ChromeApi, id: number): Promise<void> {

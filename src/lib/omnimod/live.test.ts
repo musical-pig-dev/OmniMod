@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
-import { OMNIMOD_EXTENSION_ID, liveHost, liveTransport, selectTransport, sleep, chromeCurseDriver } from "./live.ts";
+import { OMNIMOD_EXTENSION_ID, liveHost, liveTransport, selectTransport, sleep, chromeCurseDriver, uploadThunderstoreInPage } from "./live.ts";
 import type { CurseFormFill, PublishInput, Transport } from "./publish.ts";
 import { makeZip } from "./zip.ts";
 
@@ -999,6 +999,198 @@ describe("curseforge form tab", () => {
       assert.equal(plain.reason, undefined);
     }
     delete (globalThis as { chrome?: unknown }).chrome;
+  });
+});
+
+describe("thunderstore page upload", () => {
+  const job = {
+    token: "tss",
+    team: "LazyTeamNoWork",
+    community: "riskofrain2",
+    categories: ["items"],
+    fileName: "test-mod.zip",
+    bytes: [97],
+  };
+  const holder = globalThis as { chrome?: unknown; fetch: typeof fetch };
+  const previous = holder.fetch;
+
+  function install(fetchImpl: typeof fetch): void {
+    holder.fetch = fetchImpl;
+  }
+
+  async function page(mode: string) {
+    install(async (url, init) => {
+      const target = String(url);
+      if (mode === "throw-fetch" || mode === "throw-blank" || (mode === "put-throw" && target.includes("files.example"))) {
+        throw mode === "throw-blank" ? new Error("") : new TypeError(mode === "throw-fetch" ? "Failed to fetch" : "socket");
+      }
+      if (mode === "throw-text") throw "down";
+      if (target.includes("initiate-upload")) {
+        if (mode === "denied") return new Response("", { status: 401 });
+        if (mode === "detail") return jsonResponse({ detail: "bad token" }, 401);
+        if (mode === "message") return jsonResponse({ message: "no" }, 400);
+        if (mode === "error") return jsonResponse({ error: "nope" }, 400);
+        if (mode === "plain") return new Response("not json", { status: 400 });
+        if (mode === "emptyjson") return jsonResponse({}, 400);
+        if (mode === "junk") return new Response("[]", { status: 201 });
+        if (mode === "badjson") return new Response("not-json", { status: 201 });
+        if (mode === "nouslot") return jsonResponse({ user_media: {} }, 201);
+        if (mode === "nopart") return jsonResponse({ user_media: { uuid: "up" }, upload_urls: [{ url: "", part_number: 0 }] }, 201);
+        if (mode === "nourl") return jsonResponse({ user_media: { uuid: "up" }, upload_urls: [{ part_number: 1 }] }, 201);
+        if (mode === "nonumber") return jsonResponse({ user_media: { uuid: "up" }, upload_urls: [{ url: "https://files.example/p" }] }, 201);
+        if (mode === "cap") return jsonResponse({ user_media: { uuid: "up" }, upload_urls: [{ url: "https://files.example/p", PartNumber: 1, offset: 0, length: 1 }] }, 201);
+        return jsonResponse(
+          {
+            user_media: { uuid: "up-1" },
+            upload_urls: [
+              { url: "https://files.example/p1", part_number: 1, offset: 0, length: 1 },
+              { url: "https://files.example/p2", PartNumber: 2, offset: 1, length: 1 },
+            ],
+          },
+          201,
+        );
+      }
+      if (target.includes("files.example")) {
+        if (mode === "put-empty") return new Response("", { status: 403 });
+        if (mode === "put-fail") return new Response("nope", { status: 403 });
+        if (mode === "noetag") return new Response(null, { status: 200 });
+        const header = new Headers(init?.headers).get("content-md5");
+        return new Response(null, { status: 200, headers: { etag: `"${header}"` } });
+      }
+      if (target.includes("finish-upload")) {
+        if (mode === "finish") return jsonResponse({ error: "finish failed" }, 400);
+        return new Response("", { status: 204 });
+      }
+      if (mode === "submit") return jsonResponse({ detail: "rejected" }, 400);
+      const body = String(init?.body ?? "");
+      assert.match(body, /LazyTeamNoWork/);
+      assert.match(body, /items/);
+      return new Response("", { status: 201 });
+    });
+    return uploadThunderstoreInPage(mode === "empty-name" ? { ...job, fileName: "" } : job);
+  }
+
+  it("puts each part with Content-MD5 from a thunderstore.io document", async () => {
+    const { createHash } = await import("node:crypto");
+    const sent = await page("ok");
+    assert.equal(sent.ok, true);
+    holder.fetch = async (url, init) => {
+      if (String(url).includes("initiate-upload")) {
+        return jsonResponse({ user_media: { uuid: "up" }, upload_urls: [{ url: "https://files.example/p", part_number: 1, offset: 0, length: 1 }] }, 201);
+      }
+      if (String(url).includes("files.example")) {
+        const expected = createHash("md5").update(Buffer.from([97])).digest("base64");
+        assert.equal(new Headers(init?.headers).get("content-md5"), expected);
+        return new Response(null, { status: 200, headers: { etag: '"abc"' } });
+      }
+      return new Response("", { status: 204 });
+    };
+    assert.equal((await uploadThunderstoreInPage(job)).ok, true);
+    for (const mode of ["denied", "detail", "message", "error", "plain", "emptyjson", "junk", "badjson", "nouslot", "nopart", "nourl", "nonumber", "put-empty", "put-fail", "finish", "submit"]) {
+      const failed = await page(mode);
+      assert.equal(failed.ok, false);
+    }
+    assert.match((await page("throw-fetch")).ok ? "" : (await page("throw-fetch")).message, /storage refused/);
+    assert.match((await page("throw-blank")).ok ? "" : (await page("throw-blank")).message, /storage refused/);
+    assert.match((await page("put-throw")).ok ? "" : (await page("put-throw")).message, /socket/);
+    assert.match((await page("throw-text")).ok ? "" : (await page("throw-text")).message, /storage refused/);
+    assert.equal((await page("cap")).ok, true);
+    assert.equal((await page("noetag")).ok, true);
+    const named = await page("empty-name");
+    assert.equal(named.ok, true);
+    holder.fetch = previous;
+  });
+
+  it("opens a background thunderstore tab when the extension can script the page", async () => {
+    const removed: number[] = [];
+    const calls: Array<{ url?: string; active?: boolean }> = [];
+    const chrome = {
+      tabs: {
+        create: async (opts: { url: string; active: boolean }) => {
+          calls.push(opts);
+          return { id: 4 };
+        },
+        get: async () => ({ id: 4, status: "complete" }),
+        remove: async (id: number) => {
+          removed.push(id);
+        },
+      },
+      scripting: {
+        executeScript: async () => [{ result: { ok: true } }],
+      },
+    };
+    holder.chrome = chrome;
+    const ready = { token: "tss", namespace: "LazyTeamNoWork", community: "riskofrain2", categories: "items" };
+    const named = await host(async () => {
+      throw new Error("extension fetch must not run");
+    })("thunderstore", input(ready, { file: new Blob(['{"name": "MyFirstMod"} icon.png README.md manifest.json']) }));
+    assert.equal(named.ok && named.url, "https://thunderstore.io/c/riskofrain2/p/LazyTeamNoWork/MyFirstMod/");
+    assert.equal(calls[0]?.url, "https://thunderstore.io/");
+    assert.equal(calls[0]?.active, false);
+    assert.deepEqual(removed, [4]);
+
+    chrome.scripting.executeScript = async () => [{ result: { ok: true } }];
+    const unnamed = await host(async () => jsonResponse({}))(
+      "thunderstore",
+      input({ ...ready, namespace: "" }, { file: pack }),
+    );
+    assert.equal(unnamed.ok && unnamed.detail, "");
+    assert.equal(unnamed.url, undefined);
+    const noTitle = await host(async () => jsonResponse({}))("thunderstore", input(ready, { file: pack, fileName: "" }));
+    assert.equal(noTitle.ok && noTitle.url, undefined);
+
+    let stored = "";
+    chrome.scripting.executeScript = async (opts: { args?: Array<{ fileName?: string }> }) => {
+      stored = opts.args?.[0]?.fileName ?? "";
+      return [{ result: { ok: true } }];
+    };
+    await host(async () => jsonResponse({}))("thunderstore", input(ready, { file: new File([pack], "Kept.zip") }));
+    assert.equal(stored, "Kept.zip");
+    await host(async () => jsonResponse({}))("thunderstore", input(ready, { file: new File([pack], "  ") }));
+    assert.equal(stored, "lanterns.zip");
+
+    chrome.scripting.executeScript = async () => [{ result: { ok: false, message: "bad token" } }];
+    assert.match((await host(async () => jsonResponse({}))("thunderstore", input(ready, { file: pack }))).message ?? "", /bad token/);
+    chrome.scripting.executeScript = async () => [{ result: { ok: false, message: "" } }];
+    assert.match((await host(async () => jsonResponse({}))("thunderstore", input(ready, { file: pack }))).message ?? "", /rejected the upload/);
+    chrome.scripting.executeScript = async () => [];
+    assert.match((await host(async () => jsonResponse({}))("thunderstore", input(ready, { file: pack }))).message ?? "", /did not answer/);
+    chrome.scripting.executeScript = async () => undefined as never;
+    assert.match((await host(async () => jsonResponse({}))("thunderstore", input(ready, { file: pack }))).message ?? "", /did not answer/);
+    chrome.scripting.executeScript = async () => [{}] as never;
+    assert.match((await host(async () => jsonResponse({}))("thunderstore", input(ready, { file: pack }))).message ?? "", /did not answer/);
+    chrome.scripting.executeScript = async () => {
+      throw new Error("tabs are blocked");
+    };
+    assert.match((await host(async () => jsonResponse({}))("thunderstore", input(ready, { file: pack }))).message ?? "", /tabs are blocked/);
+    chrome.scripting.executeScript = async () => {
+      throw new Error("");
+    };
+    assert.match((await host(async () => jsonResponse({}))("thunderstore", input(ready, { file: pack }))).message ?? "", /could not open a tab/);
+    chrome.scripting.executeScript = async () => {
+      throw "down";
+    };
+    assert.match((await host(async () => jsonResponse({}))("thunderstore", input(ready, { file: pack }))).message ?? "", /could not open a tab/);
+
+    chrome.tabs.create = async () => ({});
+    assert.match((await host(async () => jsonResponse({}))("thunderstore", input(ready, { file: pack }))).message ?? "", /could not open a tab/);
+    chrome.tabs.create = async () => undefined as never;
+    assert.match((await host(async () => jsonResponse({}))("thunderstore", input(ready, { file: pack }))).message ?? "", /could not open a tab/);
+    chrome.tabs.create = async () => ({ id: 9 });
+    delete (chrome.tabs as { remove?: unknown }).remove;
+    chrome.scripting.executeScript = async () => [{ result: { ok: true } }];
+    assert.equal((await host(async () => jsonResponse({}))("thunderstore", input({ ...ready, namespace: "" }, { file: pack }))).ok, true);
+
+    chrome.tabs.remove = async () => {
+      throw new Error("close failed");
+    };
+    assert.equal((await host(async () => jsonResponse({}))("thunderstore", input({ ...ready, namespace: "" }, { file: pack }))).ok, true);
+
+    delete (chrome.tabs as { create?: unknown }).create;
+    assert.match((await host(async () => jsonResponse({}))("thunderstore", input(ready, { file: pack }))).message ?? "", /could not open a tab/);
+    (chrome as { tabs?: unknown }).tabs = undefined;
+    assert.match((await host(async () => jsonResponse({}))("thunderstore", input(ready, { file: pack }))).message ?? "", /could not open a tab/);
+    delete holder.chrome;
   });
 });
 
