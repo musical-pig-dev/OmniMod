@@ -1,4 +1,4 @@
-# <img src="public/favicon.svg" width="32" height="32" alt="OmniMod"> OmniMod
+# <img src="public/favicon.svg" width="32" height="32" alt="OmniMod">  OmniMod
 
 One archive. One publish. Every host that is ready.
 
@@ -13,7 +13,9 @@ One archive. One publish. Every host that is ready.
 7. [Thunderstore](#thunderstore)
 8. [CurseForge](#curseforge)
 9. [Later](#later)
-10. [Where the keys are used](#where-the-keys-are-used)
+10. [The package](#the-package)
+11. [Deployments](#deployments)
+12. [Where the keys are used](#where-the-keys-are-used)
 
 ## Install
 
@@ -30,7 +32,7 @@ After a new release, click the refresh icon on the OmniMod card.
 
 ```bash
 npm install
-npm run extension
+npm run build
 ```
 
 That writes `dist/chrome` and `omnimod-chrome.zip`.
@@ -41,6 +43,8 @@ That writes `dist/chrome` and `omnimod-chrome.zip`.
 npm test
 npm run lint
 ```
+
+Pull requests run lint on its own, then the tests. A push to main still lints before the extension is published, even when the tests are skipped.
 
 ## Set up a host
 
@@ -101,7 +105,7 @@ Create a token at [GitHub tokens](https://github.com/settings/tokens). It must b
 | Community | The word in the community URL, such as `riskofrain2`. |
 | Categories | Optional. Names from that community, separated by commas. |
 
-The zip needs `icon.png`, `README.md`, and `manifest.json` at the root.
+The zip needs `icon.png`, `README.md`, and `manifest.json` at the root. The host icon is optional. It must be a PNG no larger than 256×256.
 
 Accepts zip.
 
@@ -127,7 +131,7 @@ Text writes the same editor as plain text. Markdown switches to the markdown edi
 
 Relations and display name are optional.
 
-Accepts zip. A jar is packed into a zip when auto zip is on.
+Accepts zip.
 
 ## Later
 
@@ -138,6 +142,22 @@ The App ID is the number in the store URL. The Workshop item ID is the number in
 These hosts have no fields yet.
 
 Basedmods, AyakaMods, AFK Mods, Modding Haven, LaxMods, Mod DB.
+
+## The package
+
+Drop the archive on the mod, set the version and the changelog, then publish.
+
+Auto-zip packs files that are not already a zip. A host that accepts zip receives that zip. A host that accepts the original file receives the original file.
+
+Auto-zip can build a zip. It cannot build a jar. When one ready host accepts only a jar and another accepts only a zip, the form accepts a jar and refuses a zip.
+
+Export and Import, on the Mods page, save and restore mods, host setup, and deployments.
+
+## Deployments
+
+Each publish is listed under Deployments. Open a row to see the hosts. Select the failed hosts and run them again.
+
+If the package is no longer loaded, a dialog asks for the file. That dialog uses the same rules as the form. Cancel leaves the row unchanged.
 
 ## Where the keys are used
 

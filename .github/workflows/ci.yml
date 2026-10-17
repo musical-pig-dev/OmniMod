@@ -31,6 +31,17 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: node --experimental-strip-types scripts/main-decision.ts
 
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+
   test:
     needs: gate
     if: always() && (github.event_name == 'pull_request' || needs.gate.outputs.decision == 'run-tests') && (needs.gate.result == 'success' || needs.gate.result == 'skipped')
@@ -42,15 +53,15 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run lint
       - run: npm test
 
   extension:
-    needs: [gate, test]
+    needs: [gate, lint, test]
     if: |
       always() &&
       github.event_name == 'push' &&
       needs.gate.result == 'success' &&
+      needs.lint.result == 'success' &&
       (needs.gate.outputs.decision == 'build-extension' || needs.test.result == 'success')
     runs-on: ubuntu-latest
     permissions:
