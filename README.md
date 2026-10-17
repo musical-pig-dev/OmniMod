@@ -51,7 +51,7 @@ Pull requests run lint on its own, then the tests. A push to main still lints be
 
 The source manifest stays on the last published version. A push to main looks for the next free patch and writes that version into the built extension. It does not jump from `0.1.x` to `1.x`. Leave the source version on the last release.
 
-The extension asks for access to every HTTPS site. Nexus and Thunderstore return upload addresses on storage hosts that are not known ahead of time. The named hosts cover the APIs. The broad entry is only for those upload addresses.
+Nexus and Thunderstore hand back an upload address whose path changes for each file. Those addresses are on Amazon S3 or the Thunderstore CDN, so the extension is limited to `*.amazonaws.com` and `gcdn.thunderstore.io`. The other entries are the host APIs.
 
 ## Set up a host
 
