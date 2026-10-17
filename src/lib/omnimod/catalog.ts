@@ -419,7 +419,7 @@ export function uploadRule(configs: ConfigMap, fileName = "", autoZip = false): 
     }
   }
   let multiple = hosts.every((host) => HOST_UPLOAD[host.id].multiple);
-  if (autoZip && extensions?.length && !extensions.includes(".zip")) {
+  if (needsJar(extensions, autoZip)) {
     const zipHost = readyPlatforms(configs).some((platform) => platform.accepts?.includes(".zip") === true);
     if (zipHost) multiple = false;
   }
@@ -446,6 +446,34 @@ export function uploadHint(rule: UploadRule): string {
   return count + size;
 }
 
+function needsJar(extensions: string[] | null, autoZip: boolean): boolean {
+  return Boolean(autoZip && extensions?.length && !extensions.includes(".zip"));
+}
+
+/** Auto-zip can build a zip from a jar. It cannot build a jar, so the file must already be one. */
+export function jarRequired(rule: UploadRule, autoZip: boolean): boolean {
+  return needsJar(rule.extensions, autoZip);
+}
+
+export const JAR_REQUIRED_NOTE = "A jar is required. Auto-zip can build the zip, not a jar.";
+
+export function pickerAccept(rule: UploadRule, autoZip: boolean, fallback?: string): string | undefined {
+  if (jarRequired(rule, autoZip)) return (rule.extensions as string[]).join(",");
+  if (autoZip) return undefined;
+  return rule.extensions?.join(",") || fallback;
+}
+
+export function pickerMultiple(rule: UploadRule, autoZip: boolean): boolean {
+  if (jarRequired(rule, autoZip)) return false;
+  return autoZip || rule.multiple;
+}
+
+export function dropPrompt(rule: UploadRule, autoZip: boolean): string {
+  if (jarRequired(rule, autoZip)) return "Drop a jar, or choose a file";
+  if (autoZip || rule.multiple) return "Drop files, or choose them";
+  return "Drop a zip, or choose a file";
+}
+
 export function acceptFiles(
   files: { name: string; size: number }[],
   rule: UploadRule,
@@ -456,7 +484,7 @@ export function acceptFiles(
   if (rule.extensions && rule.extensions.length === 0) {
     return { ok: false, message: "These hosts do not accept the same file type." };
   }
-  const jarSource = Boolean(autoZip && rule.extensions?.length && !rule.extensions.includes(".zip"));
+  const jarSource = jarRequired(rule, autoZip);
   if (jarSource && files.length > 1) {
     return { ok: false, message: "One jar. Auto-zip builds the zip from that jar." };
   }

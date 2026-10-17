@@ -21,11 +21,16 @@ import {
   acceptFiles,
   curseForgeOnForm,
   defaultConfigs,
+  dropPrompt,
   fileExtension,
   heldPackageError,
   hostLimitDetail,
   hostMuted,
   isConfigured,
+  jarRequired,
+  JAR_REQUIRED_NOTE,
+  pickerAccept,
+  pickerMultiple,
   platformById,
   typeBlock,
   uploadHint,
@@ -1117,22 +1122,12 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
     mods.length > 20 ? mod.name.toLowerCase().includes(query.trim().toLowerCase()) : true,
   );
   const rule = uploadRule(hostConfigs, input.fileName, input.autoZip);
-  const jarSource = Boolean(active?.autoZip && rule.extensions?.length && !rule.extensions.includes(".zip"));
-  const fileAccept = jarSource
-    ? (rule.extensions as string[]).join(",")
-    : active?.autoZip
-      ? undefined
-      : rule.extensions?.join(",") || ".zip,.7z,.rar,application/zip";
-  const heldError = heldPackageError(active?.fileName ?? "", rule, active?.version ?? "", Boolean(active?.autoZip));
+  const autoZip = Boolean(active?.autoZip);
+  const jarSource = jarRequired(rule, autoZip);
+  const heldError = heldPackageError(active?.fileName ?? "", rule, active?.version ?? "", autoZip);
   const asked = uploadAsk ? ruleFor(uploadAsk.rowId) : null;
-  const uploadJar = Boolean(asked?.autoZip && asked.rule.extensions?.length && !asked.rule.extensions.includes(".zip"));
-  const uploadAccept = !asked
-    ? undefined
-    : uploadJar
-      ? (asked.rule.extensions as string[]).join(",")
-      : asked.autoZip
-        ? undefined
-        : asked.rule.extensions?.join(",") || undefined;
+  const uploadJar = asked ? jarRequired(asked.rule, asked.autoZip) : false;
+  const uploadAccept = asked ? pickerAccept(asked.rule, asked.autoZip) : undefined;
   const canPublish =
     input.fileName.trim().length > 0 && detailsReady && ready > 0 && !running && !repeatVersion && !heldError;
 
@@ -1623,9 +1618,7 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
                       <p className="text-sm text-mist">
                         Files that are not a zip are packed into one zip and sent to every host.
                       </p>
-                      {jarSource ? (
-                        <p className="text-sm text-mist">A jar is required. Auto-zip can build the zip, not a jar.</p>
-                      ) : null}
+                      {jarSource ? <p className="text-sm text-mist">{JAR_REQUIRED_NOTE}</p> : null}
                     </>
                   ) : null}
                 </div>
@@ -1971,21 +1964,15 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
                     </span>
                   </>
                 ) : (
-                  <span className="font-medium">
-                    {jarSource
-                      ? "Drop a jar, or choose a file"
-                      : active.autoZip || rule.multiple
-                        ? "Drop files, or choose them"
-                        : "Drop a zip, or choose a file"}
-                  </span>
+                  <span className="font-medium">{dropPrompt(rule, autoZip)}</span>
                 )}
                 <span className="text-sm text-mist">{uploadHint(rule)}</span>
               </button>
               <input
                 ref={fileRef}
                 type="file"
-                accept={fileAccept}
-                multiple={jarSource ? false : active.autoZip || rule.multiple}
+                accept={pickerAccept(rule, autoZip, ".zip,.7z,.rar,application/zip")}
+                multiple={pickerMultiple(rule, autoZip)}
                 className="sr-only"
                 onChange={(event) => onFile(event.target.files ?? undefined)}
               />
@@ -2098,7 +2085,7 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
               <p className="mt-2 text-sm text-mist">
                 {deployments.find((row) => row.id === uploadAsk.rowId)?.mod ?? "This deployment"} needs the package again.
               </p>
-              {uploadJar ? <p className="mt-2 text-sm text-mist">A jar is required. Auto-zip can build the zip, not a jar.</p> : null}
+              {uploadJar ? <p className="mt-2 text-sm text-mist">{JAR_REQUIRED_NOTE}</p> : null}
               <input
                 aria-label="Package"
                 type="file"
