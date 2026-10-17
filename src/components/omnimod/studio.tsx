@@ -22,6 +22,7 @@ import {
   curseForgeOnForm,
   defaultConfigs,
   fileExtension,
+  heldPackageError,
   hostLimitDetail,
   hostMuted,
   isConfigured,
@@ -32,11 +33,13 @@ import {
   type Platform,
   type PlatformConfig,
   type PlatformId,
+  type ConfigMap,
 } from "@/lib/omnimod/catalog";
 import {
   createMod,
   lastPublished,
   libraryFile,
+  modId,
   nameTaken,
   normalizeConfigs,
   readLibraryFile,
@@ -47,18 +50,39 @@ import {
 import { selectTransport } from "@/lib/omnimod/live";
 import {
   ACTIVE_KEY,
+  DEPLOY_KEY,
   MODS_KEY,
   formatBytes,
   loadConfigs,
+  loadDeployments,
   loadLibrary,
 } from "@/lib/omnimod/storage";
 import { VAULT_KEY, importRecoveryKey, openValue, openVault, seal, sealValue, sealedRecord, type VaultPayload } from "@/lib/omnimod/vault";
+import { DeployTable } from "@/components/omnimod/history";
 import { RevisionLink } from "@/components/omnimod/revision";
 import { ProtectKeys, UnlockKeys } from "@/components/omnimod/vault-lock";
+import {
+  addNoteLink,
+  adoptDeployment,
+  canRetryHeld,
+  deploymentFrom,
+  hostsOf,
+  markHost,
+  markRun,
+  readDeploymentList,
+  releaseAfterRetry,
+  rememberDeployment,
+  retrySpec,
+  shouldReleaseHold,
+  type Deployment,
+  type HostRun,
+} from "@/lib/omnimod/history";
+import { freshSample } from "@/lib/omnimod/sample";
 import { archiveName, makeZip, pngIconFits } from "@/lib/omnimod/zip";
 
 import {
   findOpenTicket,
+  publishOne,
   readyCount,
   runPublish,
   ticketBody,
@@ -147,15 +171,28 @@ function CredentialMark({ saved }: { saved: boolean }) {
   );
 }
 
-export function ResultSlip({ result, index }: { result: SiteResult; index: number }) {
+export function ResultSlip({
+  result,
+  index,
+  onRetry,
+  retrying = false,
+}: {
+  result: SiteResult;
+  index: number;
+  onRetry?: () => void;
+  retrying?: boolean;
+}) {
   const platform = PLATFORMS.find((item) => item.id === result.id);
   const name = platform?.name ?? result.id;
   const sent = result.status === "success";
   const failed = result.status === "error";
   const label = sent ? "Sent" : failed ? "Failed" : "Skipped";
   const lane = platform?.lane ?? "api";
-  const short =
-    failed && lane === "bot" && result.step && result.reason ? `${result.step}: ${result.reason}` : result.message;
+  const short = retrying
+    ? "Trying again."
+    : failed && lane === "bot" && result.step && result.reason
+      ? `${result.step}: ${result.reason}`
+      : result.message;
   const [open, setOpen] = useState(false);
   const [ticket, setTicket] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
@@ -196,6 +233,8 @@ export function ResultSlip({ result, index }: { result: SiteResult; index: numbe
   return (
     <li
       className={`rounded-2xl border bg-ink px-4 py-3 ${
+        retrying ? "ring-2 ring-brass" : ""
+      } ${
         sent ? "parcel-arrive border-ok/35" : failed ? "parcel-return border-bad/40" : "parcel-held border-dashed border-line"
       }`}
       style={{ animationDelay: `${index * 70}ms` }}
@@ -244,16 +283,28 @@ export function ResultSlip({ result, index }: { result: SiteResult; index: numbe
       </div>
       {failed ? (
         <div className="mt-3 border-t border-line pt-3">
-          <button
-            type="button"
-            aria-expanded={open}
-            aria-label={`${name} failure`}
-            onClick={toggle}
-            className="inline-flex items-center gap-1 text-sm text-ivory"
-          >
-            {open ? "Hide details" : "Show details"}
-            {open ? <ChevronDown className="size-4" aria-hidden="true" /> : <ChevronRight className="size-4" aria-hidden="true" />}
-          </button>
+          <div className="flex items-center justify-between gap-3">
+            <button
+              type="button"
+              aria-expanded={open}
+              aria-label={`${name} failure`}
+              onClick={toggle}
+              className="inline-flex items-center gap-1 text-sm text-ivory"
+            >
+              {open ? "Hide details" : "Show details"}
+              {open ? <ChevronDown className="size-4" aria-hidden="true" /> : <ChevronRight className="size-4" aria-hidden="true" />}
+            </button>
+            {onRetry ? (
+              <button
+                type="button"
+                disabled={retrying}
+                onClick={onRetry}
+                className="text-sm text-brass underline decoration-brass/60 underline-offset-4 disabled:cursor-wait"
+              >
+                {retrying ? "Trying again" : "Try again"}
+              </button>
+            ) : null}
+          </div>
           {open ? (
             <div className="mt-3 grid gap-2 text-sm text-mist">
               {result.step ? <p>Step: {result.step}</p> : null}
@@ -815,7 +866,17 @@ const RESULT_PILES = [
   { status: "skipped", label: "Skipped" },
 ] as const;
 
-function ResultPile({ label, results }: { label: string; results: SiteResult[] }) {
+function ResultPile({
+  label,
+  results,
+  onRetry,
+  retryingId,
+}: {
+  label: string;
+  results: SiteResult[];
+  onRetry?: (id: SiteResult["id"]) => void;
+  retryingId?: SiteResult["id"] | null;
+}) {
   const [open, setOpen] = useState(false);
   const over = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -851,7 +912,13 @@ function ResultPile({ label, results }: { label: string; results: SiteResult[] }
       {open ? (
         <ol className="space-y-2">
           {results.map((result, index) => (
-            <ResultSlip key={result.id} result={result} index={index} />
+            <ResultSlip
+              key={result.id}
+              result={result}
+              index={index}
+              onRetry={onRetry ? () => onRetry(result.id) : undefined}
+              retrying={retryingId === result.id}
+            />
           ))}
         </ol>
       ) : (
@@ -906,7 +973,15 @@ function ResultPile({ label, results }: { label: string; results: SiteResult[] }
   );
 }
 
-export function ResultDeck({ results }: { results: SiteResult[] }) {
+export function ResultDeck({
+  results,
+  onRetry,
+  retryingId,
+}: {
+  results: SiteResult[];
+  onRetry?: (id: SiteResult["id"]) => void;
+  retryingId?: SiteResult["id"] | null;
+}) {
   const piles = RESULT_PILES.map((pile) => ({
     ...pile,
     items: results.filter((result) => result.status === pile.status),
@@ -915,7 +990,13 @@ export function ResultDeck({ results }: { results: SiteResult[] }) {
   return (
     <div className="space-y-4">
       {piles.map((pile) => (
-        <ResultPile key={pile.status} label={pile.label} results={pile.items} />
+        <ResultPile
+          key={pile.status}
+          label={pile.label}
+          results={pile.items}
+          onRetry={pile.status === "error" ? onRetry : undefined}
+          retryingId={pile.status === "error" ? retryingId : null}
+        />
       ))}
     </div>
   );
@@ -926,12 +1007,24 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
   const packageFile = useRef<File | null>(null);
   const packageFiles = useRef<File[]>([]);
   const vaultKey = useRef<CryptoKey | null>(null);
+  const held = useRef<{
+    input: PublishInput;
+    configs: ConfigMap;
+    file: Blob | null;
+    zip: Blob | null;
+    sources: { name: string; blob: Blob }[];
+  } | null>(null);
+  const activeDeploy = useRef<string | null>(null);
+  const [seed] = useState(() => freshSample());
   const [hydrated, setHydrated] = useState(false);
   const [vault, setVault] = useState<"off" | "locked" | "open">("off");
   const [arming, setArming] = useState(false);
-  const [mods, setMods] = useState<ModRecord[]>([]);
-  const [activeId, setActiveId] = useState("");
+  const [mods, setMods] = useState<ModRecord[]>(() => (seed ? seed.mods : []));
+  const [activeId, setActiveId] = useState(() => (seed ? seed.mods[0].id : ""));
+  const [deployments, setDeployments] = useState<Deployment[]>(() => (seed ? seed.deployments : []));
+  const [forcedBugs] = useState<number | null>(() => (seed ? seed.bugs : null));
   const [libraryOpen, setLibraryOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [naming, setNaming] = useState(false);
   const [baseId, setBaseId] = useState("");
@@ -950,11 +1043,16 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
   const [lineOpen, setLineOpen] = useState(false);
   const [running, setRunning] = useState(false);
   const [results, setResults] = useState<SiteResult[] | null>(null);
+  const [retryingId, setRetryingId] = useState<PlatformId | null>(null);
+  const [run, setRun] = useState<HostRun[] | null>(null);
+  const [uploadAsk, setUploadAsk] = useState<{ rowId: string; ids: PlatformId[] } | null>(null);
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploadError, setUploadError] = useState("");
   const [progress, setProgress] = useState<PublishProgress | null>(null);
   const [shippedName, setShippedName] = useState("");
   const [releaseNote, setReleaseNote] = useState<ReleaseNote | null>(null);
   const [folder, setFolder] = useState<"delivery" | "notes">("delivery");
-  const [intro, setIntro] = useState(() => localStorage.getItem(INTRO_KEY) !== "1");
+  const [intro, setIntro] = useState(() => (seed ? false : localStorage.getItem(INTRO_KEY) !== "1"));
 
   const active = mods.find((mod) => mod.id === activeId) ?? mods[0];
   const hostConfigs = active?.configs ?? defaultConfigs();
@@ -972,10 +1070,13 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
   const ready = readyCount(hostConfigs, { ...input, fileName: input.fileName || "pending" });
   const detailsReady = input.version.trim().length > 0 && input.changelog.trim().length > 0;
   const repeatVersion = versionUsed(active?.publishedVersions, input.version);
-  const canPublish =
-    input.fileName.trim().length > 0 && detailsReady && ready > 0 && !running && !repeatVersion;
 
   useEffect(() => {
+    if (seed) {
+      localStorage.setItem(INTRO_KEY, "1");
+      setHydrated(true);
+      return;
+    }
     const sealed = localStorage.getItem(VAULT_KEY);
     if (sealed) {
       setVault("locked");
@@ -986,20 +1087,22 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
     const library = loadLibrary(stored);
     setMods(library.mods);
     setActiveId(library.activeId);
+    setDeployments(loadDeployments());
     setHydrated(true);
-  }, []);
+  }, [seed]);
 
   useEffect(() => {
     if (!hydrated || vault === "locked") return;
     const key = vaultKey.current;
     if (vault === "open" && key) {
       let cancel = false;
-      const payload: VaultPayload = { mods, activeId };
+      const payload: VaultPayload = { mods, activeId, deployments };
       void seal(key, payload).then((sealed) => {
         if (cancel) return;
         localStorage.setItem(VAULT_KEY, sealed);
         localStorage.removeItem(MODS_KEY);
         localStorage.removeItem(ACTIVE_KEY);
+        localStorage.removeItem(DEPLOY_KEY);
       });
       return () => {
         cancel = true;
@@ -1007,12 +1110,31 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
     }
     localStorage.setItem(MODS_KEY, JSON.stringify(mods));
     localStorage.setItem(ACTIVE_KEY, activeId);
-  }, [mods, activeId, hydrated, vault]);
+    localStorage.setItem(DEPLOY_KEY, JSON.stringify(deployments));
+  }, [mods, activeId, deployments, hydrated, vault]);
 
   const visibleMods = mods.filter((mod) =>
     mods.length > 20 ? mod.name.toLowerCase().includes(query.trim().toLowerCase()) : true,
   );
   const rule = uploadRule(hostConfigs, input.fileName, input.autoZip);
+  const jarSource = Boolean(active?.autoZip && rule.extensions?.length && !rule.extensions.includes(".zip"));
+  const fileAccept = jarSource
+    ? (rule.extensions as string[]).join(",")
+    : active?.autoZip
+      ? undefined
+      : rule.extensions?.join(",") || ".zip,.7z,.rar,application/zip";
+  const heldError = heldPackageError(active?.fileName ?? "", rule, active?.version ?? "", Boolean(active?.autoZip));
+  const asked = uploadAsk ? ruleFor(uploadAsk.rowId) : null;
+  const uploadJar = Boolean(asked?.autoZip && asked.rule.extensions?.length && !asked.rule.extensions.includes(".zip"));
+  const uploadAccept = !asked
+    ? undefined
+    : uploadJar
+      ? (asked.rule.extensions as string[]).join(",")
+      : asked.autoZip
+        ? undefined
+        : asked.rule.extensions?.join(",") || undefined;
+  const canPublish =
+    input.fileName.trim().length > 0 && detailsReady && ready > 0 && !running && !repeatVersion && !heldError;
 
   function patchMod(id: string, partial: Partial<ModRecord>) {
     setMods((list) => list.map((mod) => (mod.id === id ? { ...mod, ...partial } : mod)));
@@ -1075,10 +1197,24 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
         onProgress: setProgress,
       });
       const shown = next.map((result) => withCurseForgePage(result, hostConfigs.curseforge.fields.projectId ?? ""));
+      const mod = active!;
+      const sourcesHeld = sources.map((file) => ({ name: file.name, blob: file }));
+      const row = deploymentFrom({
+        id: modId(),
+        modId: mod.id,
+        mod: mod.name,
+        version,
+        notes: input.changelog,
+        when: new Date().toISOString(),
+        results: shown,
+      });
+      activeDeploy.current = adoptDeployment(row, activeDeploy.current);
+      held.current = { input, configs: hostConfigs, file: packageFile.current, zip, sources: sourcesHeld };
+      setDeployments((list) => rememberDeployment(list, row));
       setResults(shown);
       const successes = shown.filter((result) => result.status === "success");
       setReleaseNote({
-        name: active!.name,
+        name: mod.name,
         version,
         notes: input.changelog,
         links: successes.map((result) => ({
@@ -1086,23 +1222,140 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
           url: result.url?.trim() ?? "",
         })),
       });
-      if (next.some((result) => result.status === "success")) {
+      if (shouldReleaseHold(shown)) {
+        held.current = null;
         packageFile.current = null;
         packageFiles.current = [];
-        const recorded = recordPublish(active!, version, true);
-        patchMod(active!.id, {
+        setFileSize(null);
+        setFileError(null);
+      }
+      if (successes.length > 0) {
+        const recorded = recordPublish(mod, version, true);
+        patchMod(mod.id, {
           fileName: recorded.fileName,
           version: recorded.version,
           changelog: recorded.changelog,
           publishedVersions: recorded.publishedVersions,
           curseforgeOverride: recorded.curseforgeOverride,
         });
-        setFileSize(null);
-        setFileError(null);
       }
     } finally {
       setRunning(false);
     }
+  }
+
+  async function sendRetry(
+    rowId: string,
+    ids: PlatformId[],
+    pack: {
+      input: PublishInput;
+      configs: ConfigMap;
+      file: Blob | null;
+      zip: Blob | null;
+      sources: { name: string; blob: Blob }[];
+    },
+  ) {
+    let progress: HostRun[] = ids.map((id) => ({ id, name: platformById(id).name, state: "queued" }));
+    setRun(progress);
+    let nextHosts = hostsOf(deployments, rowId);
+    try {
+      for (const id of ids) {
+        setRetryingId(id);
+        progress = markRun(progress, id, "sending");
+        setRun(progress);
+        const shown = withCurseForgePage(
+          await publishOne({
+            id,
+            input: pack.input,
+            configs: pack.configs,
+            transport: selectTransport(transport),
+            file: pack.file,
+            zip: pack.zip,
+            sources: pack.sources,
+          }),
+          pack.configs.curseforge.fields.projectId ?? "",
+        );
+        progress = markRun(progress, id, shown.status === "success" ? "sent" : "failed");
+        setRun(progress);
+        setResults((list) => (list ? list.map((result) => (result.id === id ? shown : result)) : list));
+        if (shown.status === "success") {
+          const host = platformById(id).name;
+          const url = shown.url?.trim() ?? "";
+          nextHosts = nextHosts.map((item) => (item.id === id ? { ...item, status: "success" } : item));
+          setReleaseNote((note) => (note ? addNoteLink(note, host, url) : note));
+          setDeployments((list) => list.map((row) => (row.id === rowId ? markHost(row, id, { status: "success", message: shown.message, url }) : row)));
+        }
+      }
+      if (releaseAfterRetry(nextHosts)) held.current = null;
+    } finally {
+      setRetryingId(null);
+      setRun(null);
+    }
+  }
+
+  async function retryHosts(rowId: string, ids: PlatformId[]) {
+    const pack = held.current;
+    if (!pack || !canRetryHeld(rowId, activeDeploy.current, { file: pack.file, zip: pack.zip, sources: pack.sources.length })) {
+      setUploadFile(null);
+      setUploadError("");
+      setUploadAsk({ rowId, ids });
+      return;
+    }
+    await sendRetry(rowId, ids, pack);
+  }
+
+  function ruleFor(rowId: string, fileName = "") {
+    const row = deployments.find((item) => item.id === rowId) ?? null;
+    const mod = row ? mods.find((item) => item.id === row.modId) ?? null : null;
+    const autoZip = Boolean(mod?.autoZip);
+    return {
+      row,
+      mod,
+      autoZip,
+      rule: uploadRule(mod ? mod.configs : defaultConfigs(), fileName, autoZip),
+    };
+  }
+
+  async function confirmUpload() {
+    const ask = uploadAsk;
+    const file = uploadFile;
+    if (!ask || !file) return;
+    const { row, mod, autoZip, rule } = ruleFor(ask.rowId, file.name);
+    if (row === null) {
+      setUploadAsk(null);
+      setUploadFile(null);
+      setUploadError("");
+      return;
+    }
+    const accepted = acceptFiles([{ name: file.name, size: file.size }], rule, "", autoZip);
+    if (!accepted.ok) {
+      setUploadError(accepted.message);
+      return;
+    }
+    setUploadError("");
+    setUploadAsk(null);
+    setUploadFile(null);
+    const spec = retrySpec(row, mods, file.name);
+    const zip = spec.zip
+      ? makeZip([{ name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) }], spec.fileName)
+      : null;
+    const pack = {
+      input: {
+        fileName: spec.fileName,
+        version: spec.version,
+        changelog: spec.changelog,
+        override: mod?.curseforgeOverride,
+        autoZip: spec.autoZip,
+        zipName: spec.zipName,
+      },
+      configs: mod ? mod.configs : defaultConfigs(),
+      file,
+      zip,
+      sources: [{ name: file.name, blob: file }],
+    };
+    held.current = pack;
+    activeDeploy.current = ask.rowId;
+    await sendRetry(ask.rowId, ask.ids, pack);
   }
 
   function downloadHosts(text: string) {
@@ -1118,7 +1371,7 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
   async function exportHosts() {
     setHostFileError("");
     setHostKeyError(false);
-    const text = JSON.stringify(libraryFile(mods));
+    const text = JSON.stringify(libraryFile(mods, deployments));
     if (vault !== "open") {
       downloadHosts(text);
       return;
@@ -1153,6 +1406,7 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
     }
     setMods(imported);
     setActiveId(imported[0]?.id ?? "");
+    setDeployments(readDeploymentList(parsed));
     setLibraryOpen(true);
     setHostGate(null);
     setHostFileError("");
@@ -1187,14 +1441,15 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
     }
     setMods(imported);
     setActiveId(imported[0]?.id ?? "");
+    setDeployments(readDeploymentList(opened.value));
     setLibraryOpen(true);
     setHostGate(null);
   }
 
   const sent = results?.filter((result) => result.status === "success").length ?? 0;
   const failed = results?.filter((result) => result.status === "error").length ?? 0;
-  const formOn = Boolean(active) && !hostsOpen && !libraryOpen;
-  const modsOn = !hostsOpen && (libraryOpen || !active);
+  const formOn = Boolean(active) && !hostsOpen && !libraryOpen && !historyOpen;
+  const modsOn = !hostsOpen && !historyOpen && (libraryOpen || !active);
   const tabFace = (on: boolean) =>
     `inline-flex h-10 items-center justify-center gap-2 rounded-full px-3.5 text-sm font-medium transition-colors ${
       on ? "bg-brass text-brass-ink" : "text-ivory hover:text-brass"
@@ -1202,8 +1457,8 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
 
   return (
     <div className="min-h-screen overflow-x-hidden bg-ink text-ivory">
-      <div className="mx-auto flex w-full max-w-6xl flex-col gap-8 px-4 py-6 sm:px-6 sm:py-10">
-        <header className="flex flex-wrap items-center justify-between gap-4 border-b border-line pb-6">
+      <div className={`mx-auto flex w-full max-w-6xl flex-col px-4 sm:px-6 ${historyOpen ? "h-dvh gap-6 overflow-hidden pt-6 pb-24 sm:pt-10" : "gap-8 py-6 sm:py-10"}`}>
+        <header className="flex shrink-0 flex-wrap items-center justify-between gap-4 border-b border-line pb-6">
           <div className="flex min-w-0 items-center gap-3">
             <Mark />
             <p className="font-display text-3xl leading-none tracking-tight">OmniMod</p>
@@ -1238,6 +1493,7 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
               onClick={() => {
                 setHostsOpen(false);
                 setLibraryOpen(false);
+                setHistoryOpen(false);
               }}
               className={`${tabFace(formOn)} disabled:cursor-not-allowed disabled:text-mist disabled:hover:text-mist`}
             >
@@ -1248,6 +1504,7 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
                 type="button"
                 aria-expanded={libraryOpen}
                 onClick={() => {
+                  setHistoryOpen(false);
                   if (hostsOpen) {
                     setHostsOpen(false);
                     setLibraryOpen(true);
@@ -1264,13 +1521,31 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
             <button
               type="button"
               aria-expanded={hostsOpen}
-              onClick={() => setHostsOpen((open) => !open)}
+              onClick={() => {
+                setHistoryOpen(false);
+                setHostsOpen((open) => !open);
+              }}
               className={tabFace(hostsOpen)}
             >
               <KeyRound className={`size-4 ${hostsOpen ? "text-brass-ink" : ready > 0 ? "text-brass" : "text-brass/35"}`} aria-hidden="true" />
               Hosts
               <span className={hostsOpen ? "text-brass-ink/70" : "text-mist"}>{ready}</span>
             </button>
+            {deployments.length > 0 ? (
+              <button
+                type="button"
+                aria-label="Deployments"
+                aria-expanded={historyOpen}
+                onClick={() => {
+                  setHostsOpen(false);
+                  setLibraryOpen(false);
+                  setHistoryOpen((open) => !open);
+                }}
+                className={tabFace(historyOpen)}
+              >
+                <PackageCheck className="size-4" aria-hidden="true" />
+              </button>
+            ) : null}
           </div>
         </header>
 
@@ -1284,6 +1559,7 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
               vaultKey.current = opened.key;
               setMods(opened.payload.mods);
               setActiveId(opened.payload.activeId);
+              setDeployments(opened.payload.deployments);
               setVault("open");
               return true;
             }}
@@ -1347,6 +1623,9 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
                       <p className="text-sm text-mist">
                         Files that are not a zip are packed into one zip and sent to every host.
                       </p>
+                      {jarSource ? (
+                        <p className="text-sm text-mist">A jar is required. Auto-zip can build the zip, not a jar.</p>
+                      ) : null}
                     </>
                   ) : null}
                 </div>
@@ -1403,7 +1682,22 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
           </section>
         ) : null}
 
-        {hostsOpen || vault === "locked" || arming ? null : (
+        {historyOpen ? (
+          <DeployTable
+            rows={deployments}
+            notice=""
+            run={run}
+            onDelete={(ids) => {
+              const next = deployments.filter((row) => !ids.includes(row.id));
+              setDeployments(next);
+              if (next.length === 0 && !uploadAsk) setHistoryOpen(false);
+            }}
+            onRetry={(rowId, ids) => void retryHosts(rowId, ids)}
+            onCopy={() => undefined}
+          />
+        ) : null}
+
+        {hostsOpen || vault === "locked" || arming || historyOpen ? null : (
         <section key={active?.id ?? "none"} className="mx-auto w-full min-w-0 max-w-xl space-y-4">
             {progress ? (
               <FileFolder tab={folder} note={releaseNote} onTab={setFolder}>
@@ -1677,19 +1971,25 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
                     </span>
                   </>
                 ) : (
-                  <span className="font-medium">{active.autoZip || rule.multiple ? "Drop files, or choose them" : "Drop a zip, or choose a file"}</span>
+                  <span className="font-medium">
+                    {jarSource
+                      ? "Drop a jar, or choose a file"
+                      : active.autoZip || rule.multiple
+                        ? "Drop files, or choose them"
+                        : "Drop a zip, or choose a file"}
+                  </span>
                 )}
                 <span className="text-sm text-mist">{uploadHint(rule)}</span>
               </button>
               <input
                 ref={fileRef}
                 type="file"
-                accept={active.autoZip ? undefined : rule.extensions?.join(",") || ".zip,.7z,.rar,application/zip"}
-                multiple={active.autoZip || rule.multiple}
+                accept={fileAccept}
+                multiple={jarSource ? false : active.autoZip || rule.multiple}
                 className="sr-only"
                 onChange={(event) => onFile(event.target.files ?? undefined)}
               />
-              {fileError ? <p className="mt-2 text-sm text-bad">{fileError}</p> : null}
+              {fileError || heldError ? <p className="mt-2 text-sm text-bad">{fileError || heldError}</p> : null}
               <label className="mt-4 block">
                 <span className="mb-1.5 block text-sm text-mist">
                   Version <span className="text-brass">*</span>
@@ -1744,7 +2044,13 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
               )}
             </div>
             )}
-            {results ? <ResultDeck results={results} /> : null}
+            {results ? (
+              <ResultDeck
+                results={results}
+                retryingId={retryingId}
+                onRetry={(id) => void retryHosts(activeDeploy.current!, [id])}
+              />
+            ) : null}
           </section>
         )}
         {vault === "off" ? (
@@ -1752,6 +2058,7 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
             type="button"
             onClick={() => {
               setHostsOpen(false);
+              setHistoryOpen(false);
               setArming(true);
             }}
             className="fixed bottom-3 left-3 z-20 inline-flex min-h-11 items-center gap-2 text-sm text-ivory"
@@ -1775,7 +2082,58 @@ export function Studio({ transport }: { transport?: Transport } = {}) {
             }}
           />
         ) : null}
-        <RevisionLink />
+        <RevisionLink bugs={forcedBugs} />
+        {uploadAsk ? (
+          <form
+            role="dialog"
+            aria-label="Upload package"
+            className="fixed inset-0 z-40 grid place-items-center bg-ink/80 px-6 backdrop-blur-sm"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void confirmUpload();
+            }}
+          >
+            <div className="w-full max-w-md rounded-[28px] border border-brass/50 bg-panel p-6 shadow-[0_0_48px_rgba(212,160,84,0.18)]">
+              <p className="font-display text-3xl tracking-tight text-ivory">Upload</p>
+              <p className="mt-2 text-sm text-mist">
+                {deployments.find((row) => row.id === uploadAsk.rowId)?.mod ?? "This deployment"} needs the package again.
+              </p>
+              {uploadJar ? <p className="mt-2 text-sm text-mist">A jar is required. Auto-zip can build the zip, not a jar.</p> : null}
+              <input
+                aria-label="Package"
+                type="file"
+                accept={uploadAccept}
+                className="mt-4 block w-full text-sm text-ivory file:mr-3 file:rounded-full file:border-0 file:bg-brass file:px-4 file:py-2 file:text-sm file:font-medium file:text-brass-ink"
+                onChange={(event) => {
+                  setUploadFile(event.target.files?.[0] ?? null);
+                  setUploadError("");
+                }}
+              />
+              {uploadError ? <p className="mt-3 text-sm text-bad">{uploadError}</p> : null}
+              <div className="mt-5 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setUploadAsk(null);
+                    setUploadFile(null);
+                    setUploadError("");
+                  }}
+                  className="h-9 rounded-full border border-line px-4 text-sm text-ivory"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  aria-label="Run upload"
+                  disabled={!uploadFile}
+                  className="h-9 rounded-full bg-brass px-4 text-sm font-medium text-brass-ink disabled:cursor-not-allowed disabled:bg-line disabled:text-mist"
+                >
+                  Run
+                </button>
+              </div>
+            </div>
+          </form>
+        ) : null}
         </div>
       </div>
   );

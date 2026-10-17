@@ -17,6 +17,7 @@ import {
   practiceFields,
   practiceValue,
   publicHostConfig,
+  publishOne,
   readyCount,
   resolveCurseVersionIds,
   runPublish,
@@ -1453,7 +1454,7 @@ describe("failure report", () => {
     assert.equal(publicHostConfig("nexus", {}), undefined);
     assert.equal(publicHostConfig("curseforge", { projectId: "  " }), undefined);
     assert.deepEqual(
-      publicHostConfig("curseforge", { projectId: "9", password: "p", cookie: "c", secretNote: "s", myKey: "k" }),
+      publicHostConfig("curseforge", { projectId: "9", password: "p", cookie: "c", secretNote: "s", myKey: "k", icon: "data:image/png;base64,YQ==" }),
       { projectId: "9" },
     );
     const configs = defaultConfigs();
@@ -1568,5 +1569,118 @@ describe("failure report", () => {
     assert.equal(await findOpenTicket(title, async () => ({ ok: true, json: async () => ({ items: "no" }) })), null);
     assert.equal(await findOpenTicket(title, async () => ({ ok: true, json: async () => ({ items: [] }) })), null);
     assert.equal(await findOpenTicket(title, lookup), "https://github.com/musical-pig-dev/OmniMod/issues/12");
+  });
+});
+
+describe("publishOne", () => {
+  it("retries one host and refuses a missing package", async () => {
+    const configs = defaultConfigs();
+    configs.nexus.fields.gameDomain = "skyrim";
+    const file = new Blob(["zip"]);
+    const sent = await publishOne({
+      id: "nexus",
+      input,
+      configs,
+      file,
+      transport: async () => ({ ok: true, detail: "id 9", url: " https://mods.example/1 " }),
+    });
+    assert.equal(sent.status, "success");
+    assert.match(sent.message, /Nexus Mods accepted 1.4.2\./);
+    assert.match(sent.message, /id 9/);
+    assert.equal(sent.url, "https://mods.example/1");
+    const plain = await publishOne({
+      id: "nexus",
+      input,
+      configs,
+      file,
+      transport: async () => ({ ok: true, url: "  " }),
+    });
+    assert.equal(plain.url, undefined);
+    assert.equal(plain.message.includes("id 9"), false);
+    const quiet = await publishOne({
+      id: "nexus",
+      input,
+      configs,
+      file,
+      transport: async () => ({ ok: true }),
+    });
+    assert.equal(quiet.url, undefined);
+    const carried = await publishOne({
+      id: "nexus",
+      input: { ...input, file },
+      configs,
+      file: null,
+      zip: file,
+      sources: [{ name: "lanterns.zip", blob: file }],
+      transport: async () => ({ ok: true, detail: "" }),
+    });
+    assert.equal(carried.status, "success");
+    const missing = await publishOne({
+      id: "nexus",
+      input,
+      configs,
+      transport: async () => ({ ok: true }),
+    });
+    assert.equal(missing.message, "Choose the package again.");
+    const rejected = await publishOne({
+      id: "nexus",
+      input: { ...input, fileName: " " },
+      configs,
+      file,
+      transport: async () => ({ ok: false, message: "" }),
+    });
+    assert.equal(rejected.message, "Nexus Mods rejected the upload.");
+    assert.equal(rejected.file, undefined);
+    const rich = await publishOne({
+      id: "curseforge",
+      input,
+      configs,
+      file,
+      transport: async () => ({ ok: false, message: "nope", step: "form", reason: "closed", filled: ["file"], logs: ["one"] }),
+    });
+    assert.equal(rich.step, "form");
+    assert.deepEqual(rich.filled, ["file"]);
+    assert.deepEqual(rich.logs, ["one"]);
+    const emptyLists = await publishOne({
+      id: "nexus",
+      input,
+      configs,
+      file,
+      transport: async () => ({ ok: false, message: "no", filled: [], logs: [] }),
+    });
+    assert.equal(emptyLists.filled, undefined);
+    assert.equal(emptyLists.logs, undefined);
+    assert.equal(emptyLists.step, undefined);
+    const boom = await publishOne({
+      id: "nexus",
+      input,
+      configs,
+      file,
+      transport: async () => {
+        throw new Error("offline");
+      },
+    });
+    assert.match(boom.message, /offline/);
+    const blank = await publishOne({
+      id: "nexus",
+      input,
+      configs,
+      file,
+      transport: async () => {
+        throw new Error("");
+      },
+    });
+    assert.equal(blank.reason, "Request failed.");
+    const weird = await publishOne({
+      id: "nexus",
+      input,
+      configs,
+      file,
+      transport: async () => {
+        throw "nope";
+      },
+    });
+    assert.equal(weird.reason, "Request failed.");
+    assert.deepEqual(weird.logs, ["exception: Request failed."]);
   });
 });

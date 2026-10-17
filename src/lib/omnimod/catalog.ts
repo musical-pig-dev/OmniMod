@@ -365,6 +365,27 @@ export function curseForgeOnForm(configs: ConfigMap, fileName: string, autoZip =
   return !typeBlock(platform, configs, fileName, autoZip);
 }
 
+function readyPlatforms(configs: ConfigMap): Platform[] {
+  const ready: Platform[] = [];
+  for (const platform of PLATFORMS) {
+    if (platform.lane === "later") continue;
+    const config = configs[platform.id];
+    if (!config.enabled || !isConfigured(platform, config)) continue;
+    ready.push(platform);
+  }
+  return ready;
+}
+
+function sourceExtensions(configs: ConfigMap, autoZip: boolean): string[] | null {
+  if (!autoZip) return null;
+  const strict = readyPlatforms(configs).find((platform) => {
+    const accepts = platform.accepts;
+    return Boolean(accepts && !accepts.includes(".zip"));
+  });
+  if (!strict) return null;
+  return [...(strict.accepts as string[])];
+}
+
 function ruleExtensions(configs: ConfigMap): string[] | null {
   const lock = typeLock(configs);
   if (lock && lock.length === 0) {
@@ -379,7 +400,7 @@ function ruleExtensions(configs: ConfigMap): string[] | null {
 }
 
 export function uploadRule(configs: ConfigMap, fileName = "", autoZip = false): UploadRule {
-  const extensions = ruleExtensions(configs);
+  const extensions = sourceExtensions(configs, autoZip) ?? ruleExtensions(configs);
   const hosts = PLATFORMS.filter((platform) => {
     if (platform.lane !== "api") return false;
     const config = configs[platform.id];
@@ -397,11 +418,16 @@ export function uploadRule(configs: ConfigMap, fileName = "", autoZip = false): 
       label = rule.label;
     }
   }
+  let multiple = hosts.every((host) => HOST_UPLOAD[host.id].multiple);
+  if (autoZip && extensions?.length && !extensions.includes(".zip")) {
+    const zipHost = readyPlatforms(configs).some((platform) => platform.accepts?.includes(".zip") === true);
+    if (zipHost) multiple = false;
+  }
   return {
     hosts: hosts.length,
     maxBytes,
     label,
-    multiple: hosts.every((host) => HOST_UPLOAD[host.id].multiple),
+    multiple,
     extensions,
   };
 }
@@ -427,18 +453,25 @@ export function acceptFiles(
   autoZip = false,
 ): { ok: true; fileName: string; version: string; size: number } | { ok: false; message: string } {
   if (files.length === 0) return { ok: false, message: "" };
-  if (!autoZip && rule.extensions && rule.extensions.length === 0) {
+  if (rule.extensions && rule.extensions.length === 0) {
     return { ok: false, message: "These hosts do not accept the same file type." };
+  }
+  const jarSource = Boolean(autoZip && rule.extensions?.length && !rule.extensions.includes(".zip"));
+  if (jarSource && files.length > 1) {
+    return { ok: false, message: "One jar. Auto-zip builds the zip from that jar." };
   }
   const chosen = autoZip || rule.multiple ? files : files.slice(0, 1);
   if (rule.extensions && rule.extensions.length > 0) {
     const wrong = chosen.find((file) => {
       const ext = fileExtension(file.name);
       if (rule.extensions!.includes(ext)) return false;
-      return !(autoZip && (ext === ".zip" || rule.extensions!.includes(".zip")));
+      return !(autoZip && rule.extensions!.includes(".zip"));
     });
     if (wrong) {
-      return { ok: false, message: `${wrong.name} is not accepted. These hosts need ${rule.extensions.join(", ")}.` };
+      const message = jarSource
+        ? `${wrong.name} is not accepted. Auto-zip can build a zip from a jar, not a jar from a zip.`
+        : `${wrong.name} is not accepted. These hosts need ${rule.extensions.join(", ")}.`;
+      return { ok: false, message };
     }
   }
   if (rule.maxBytes != null) {
@@ -452,4 +485,15 @@ export function acceptFiles(
     version: match?.[1] ?? version,
     size: chosen.reduce((sum, file) => sum + file.size, 0),
   };
+}
+
+export function heldPackageError(fileName: string, rule: UploadRule, version: string, autoZip: boolean): string {
+  if (!autoZip || !fileName.trim() || !rule.extensions?.length) return "";
+  const accepted = acceptFiles(
+    fileName.split(", ").map((name) => ({ name, size: 1 })),
+    rule,
+    version,
+    true,
+  );
+  return accepted.ok ? "" : accepted.message;
 }

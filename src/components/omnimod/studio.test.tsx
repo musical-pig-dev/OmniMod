@@ -7,6 +7,8 @@ import { Delivery, ReleaseCard, ResultDeck, ResultSlip, SiteCard, Studio } from 
 import { platformById } from "@/lib/omnimod/catalog";
 import { emptyConfig } from "@/lib/omnimod/catalog";
 import { createMod, libraryFile, readLibraryFile } from "@/lib/omnimod/mods";
+import { deploymentFrom } from "@/lib/omnimod/history";
+import { resetBugLookup } from "@/lib/omnimod/bugs";
 import { MODS_KEY } from "@/lib/omnimod/storage";
 import * as vault from "@/lib/omnimod/vault";
 
@@ -14,11 +16,15 @@ const ok: Transport = async () => ({ ok: true });
 
 beforeEach(() => {
   localStorage.setItem("omnimod-intro-v7", "1");
+  resetBugLookup();
+  vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => ({ total_count: 0, items: [] }) })));
 });
 
 afterEach(() => {
   cleanup();
   localStorage.clear();
+  vi.unstubAllGlobals();
+  resetBugLookup();
 });
 
 function zip(name: string, bytes = 12) {
@@ -350,6 +356,89 @@ describe("Studio", () => {
     expect(screen.getByText("one.jar, two.jar")).toBeTruthy();
   });
 
+  it("accepts only a jar when auto-zip bridges a jar host and a zip host", async () => {
+    const user = userEvent.setup();
+    const mod = createMod("Lanterns");
+    mod.autoZip = true;
+    mod.version = "1.0.0";
+    mod.changelog = "notes";
+    mod.configs.modrinth = {
+      enabled: true,
+      fields: { token: "t", project: "lanterns", gameVersions: "1.20.1", loaders: "fabric" },
+    };
+    mod.configs.thunderstore = {
+      enabled: true,
+      fields: { token: "t", namespace: "Team", community: "riskofrain2" },
+    };
+    localStorage.setItem(MODS_KEY, JSON.stringify([mod]));
+    render(<Studio transport={ok} />);
+    await user.click(await screen.findByRole("button", { name: /Hosts/ }));
+    expect(screen.getByText("A jar is required. Auto-zip can build the zip, not a jar.")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /Hosts/ }));
+    const picker = document.querySelector('input[type="file"]') as HTMLInputElement;
+    expect(picker.accept).toBe(".jar");
+    expect(picker.multiple).toBe(false);
+    expect(screen.getByRole("button", { name: /Drop a jar/ })).toBeTruthy();
+    fireEvent.drop(screen.getByRole("button", { name: /Drop a jar/ }), { dataTransfer: { files: [zip("mod.zip")] } });
+    expect(screen.getByText("mod.zip is not accepted. Auto-zip can build a zip from a jar, not a jar from a zip.")).toBeTruthy();
+    expect(screen.queryByText("mod.zip", { exact: true })).toBeNull();
+    await user.upload(picker, zip("mod.jar"));
+    expect(screen.queryByText(/not accepted/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Publish to 2 hosts" })).toHaveProperty("disabled", false);
+    cleanup();
+    mod.fileName = "pack.zip";
+    localStorage.setItem(MODS_KEY, JSON.stringify([mod]));
+    render(<Studio transport={ok} />);
+    expect(screen.getByText("pack.zip is not accepted. Auto-zip can build a zip from a jar, not a jar from a zip.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Publish to/ })).toHaveProperty("disabled", true);
+  });
+
+  it("uses the same jar rule in the upload modal", async () => {
+    const user = userEvent.setup();
+    const mod = createMod("Lanterns");
+    mod.autoZip = true;
+    mod.configs.modrinth = {
+      enabled: true,
+      fields: { token: "t", project: "lanterns", gameVersions: "1.20.1", loaders: "fabric" },
+    };
+    mod.configs.thunderstore = {
+      enabled: true,
+      fields: { token: "t", namespace: "Team", community: "riskofrain2" },
+    };
+    const saved = deploymentFrom({
+      id: "old",
+      modId: mod.id,
+      mod: mod.name,
+      version: "1.0.0",
+      notes: "Earlier.",
+      when: "2026-01-02T15:04:00.000Z",
+      results: [
+        { id: "modrinth", status: "error", message: "no" },
+        { id: "thunderstore", status: "error", message: "no" },
+      ],
+    });
+    render(<Studio transport={ok} />);
+    await user.upload(
+      screen.getByLabelText("Import file"),
+      new File([JSON.stringify(libraryFile([mod], saved ? [saved] : []))], "omnimod.json"),
+    );
+    await user.click(screen.getByRole("button", { name: "Deployments" }));
+    await user.click(screen.getByRole("button", { name: "Expand old" }));
+    await user.click(screen.getByRole("button", { name: "Rerun Modrinth" }));
+    await user.click(screen.getByRole("button", { name: "Run" }));
+    const input = screen.getByLabelText("Package") as HTMLInputElement;
+    expect(input.accept).toBe(".jar");
+    expect(screen.getByText("A jar is required. Auto-zip can build the zip, not a jar.")).toBeTruthy();
+    fireEvent.change(input, { target: { files: [zip("mod.zip")] } });
+    await user.click(screen.getByRole("button", { name: "Run upload" }));
+    expect(screen.getByRole("dialog", { name: "Upload package" })).toBeTruthy();
+    expect(screen.getByText("mod.zip is not accepted. Auto-zip can build a zip from a jar, not a jar from a zip.")).toBeTruthy();
+    fireEvent.change(input, { target: { files: [] } });
+    await user.upload(input, zip("mod.jar"));
+    await user.click(screen.getByRole("button", { name: "Run upload" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Upload package" })).toBeNull());
+  });
+
   it("reads a version out of the file name and ignores an empty drop", async () => {
     const user = userEvent.setup();
     render(<Studio transport={ok} />);
@@ -620,6 +709,59 @@ describe("Studio", () => {
       <ResultSlip result={{ id: "curseforge", status: "error", message: "no", url: "https://example.com" }} index={0} />,
     );
     expect(screen.queryByRole("link", { name: "View upload" })).toBeNull();
+  });
+
+  it("offers a retry on the failed card", async () => {
+    const user = userEvent.setup();
+    const retry = vi.fn();
+    render(
+      <ResultSlip
+        result={{ id: "curseforge", status: "error", message: "no" }}
+        index={0}
+        onRetry={retry}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    expect(retry).toHaveBeenCalled();
+    cleanup();
+    render(
+      <ResultSlip
+        result={{ id: "curseforge", status: "error", message: "no" }}
+        index={0}
+        onRetry={retry}
+        retrying
+      />,
+    );
+    expect(screen.getByText("Trying again.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Trying again" })).toHaveProperty("disabled", true);
+    expect(document.querySelector(".ring-brass")).toBeTruthy();
+  });
+
+  it("retries only the failed pile", async () => {
+    const user = userEvent.setup();
+    const retry = vi.fn();
+    render(
+      <ResultDeck
+        results={[
+          { id: "nexus", status: "success", message: "ok" },
+          { id: "curseforge", status: "error", message: "no" },
+        ]}
+        retryingId="curseforge"
+        onRetry={retry}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Show Failed" }));
+    expect(screen.getByText("Trying again.")).toBeTruthy();
+    cleanup();
+    render(
+      <ResultDeck
+        results={[{ id: "curseforge", status: "error", message: "no" }]}
+        onRetry={retry}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Show Failed" }));
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    expect(retry).toHaveBeenCalledWith("curseforge");
   });
 
   it("stacks results until they are opened", async () => {
@@ -1100,5 +1242,251 @@ describe("Studio", () => {
     await user.click(screen.getByRole("button", { name: /Hosts/ }));
     await user.click(screen.getByRole("button", { name: /Nexus Mods/ }));
     expect((screen.getByLabelText("API key") as HTMLInputElement).value).toBe("moved");
+  });
+
+  it("seeds sample mods, submissions, and three bugs for the sample dev script", async () => {
+    vi.stubEnv("VITE_OMNIMOD_SAMPLE", "1");
+    localStorage.removeItem("omnimod-intro-v7");
+    const user = userEvent.setup();
+    render(<Studio transport={ok} />);
+    expect(document.querySelector(".intro-in, .intro-out")).toBeNull();
+    expect(screen.getByDisplayValue("Lanterns")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "3 open bugs" }).textContent).toContain("3");
+    await user.click(screen.getByRole("button", { name: "Deployments" }));
+    await user.click(screen.getAllByRole("button", { name: /^Expand / })[0]!);
+    await user.click(screen.getByRole("button", { name: /^Copy release notes/ }));
+    expect(screen.getByText("Harbor Bells")).toBeTruthy();
+    expect(screen.getByText("Glass Moths")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Form" }));
+    expect(screen.queryByRole("button", { name: "Deployments" })).toBeTruthy();
+    expect(screen.queryByText("Harbor Bells")).toBeNull();
+    vi.unstubAllEnvs();
+  });
+
+  it("moves a retried host into the sent pile and the release note", async () => {
+    const user = userEvent.setup();
+    let curse = 0;
+    const transport: Transport = async (id) => {
+      if (id === "curseforge") {
+        curse += 1;
+        if (curse === 1) return { ok: false, message: "no" };
+        return { ok: true, url: "https://edge.forgecdn.net/files/1/test.zip" };
+      }
+      return { ok: true };
+    };
+    render(<Studio transport={transport} />);
+    await addMod(user, "Lanterns");
+    await user.click(screen.getByRole("button", { name: /Hosts/ }));
+    await user.click(screen.getByRole("button", { name: /Nexus Mods/ }));
+    await typeField(user, "API key", "secret");
+    await typeField(user, "Game domain", "site");
+    await typeField(user, "Mod ID", "1");
+    await user.click(screen.getByRole("button", { name: /CurseForge/ }));
+    await typeField(user, "Project ID", "1744552");
+    await typeField(user, "Game versions", "26.2");
+    await user.click(screen.getByRole("button", { name: /Hosts/ }));
+    await user.upload(document.querySelector('input[type="file"]') as HTMLInputElement, zip("test-mod.zip"));
+    const version = screen.getByRole("textbox", { name: "Version *" });
+    await user.clear(version);
+    await user.type(version, "0.0.5");
+    await user.type(screen.getByRole("textbox", { name: "Changelog *" }), "Softer glass.");
+    await user.click(screen.getByRole("button", { name: /Publish to/ }));
+    await user.click(screen.getByRole("button", { name: "Show Failed" }));
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    await user.click(screen.getByRole("tab", { name: "Notes" }));
+    expect(await screen.findByRole("link", { name: "https://authors.curseforge.com/#/projects/1744552/files" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Show Failed" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Deployments" }));
+    await user.click(screen.getByRole("button", { name: "Deployments" }));
+    expect(screen.getByRole("tab", { name: "Notes" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Deployments" }));
+    await user.click(screen.getByRole("button", { name: /^Expand / }));
+    await user.click(screen.getByRole("checkbox", { name: /^Select (?!all)/ }));
+    await user.click(screen.getByRole("button", { name: "Delete selected" }));
+    expect(screen.queryByRole("button", { name: "Deployments" })).toBeNull();
+  });
+
+  it("asks for the package when a saved deployment cannot be sent", async () => {
+    const user = userEvent.setup();
+    const mod = createMod("Lanterns");
+    mod.autoZip = true;
+    mod.zipName = "harbor";
+    const saved = deploymentFrom({
+      id: "old",
+      modId: mod.id,
+      mod: mod.name,
+      version: "1.0.0",
+      notes: "Earlier.",
+      when: "2026-01-02T15:04:00.000Z",
+      results: [
+        { id: "nexus", status: "error", message: "no" },
+        { id: "curseforge", status: "error", message: "no" },
+      ],
+    });
+    render(<Studio transport={ok} />);
+    await user.upload(
+      screen.getByLabelText("Import file"),
+      new File([JSON.stringify(libraryFile([mod], saved ? [saved] : []))], "omnimod.json"),
+    );
+    await user.click(screen.getByRole("button", { name: "Deployments" }));
+    await user.click(screen.getByRole("button", { name: "Expand old" }));
+    await user.click(screen.getByRole("button", { name: "Rerun Nexus Mods" }));
+    await user.click(screen.getByRole("button", { name: "Rerun CurseForge" }));
+    await user.click(screen.getByRole("button", { name: "Run" }));
+    const dialog = screen.getByRole("dialog", { name: "Upload package" });
+    fireEvent.submit(dialog);
+    expect(screen.getByRole("dialog", { name: "Upload package" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Run upload" })).toHaveProperty("disabled", true);
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog", { name: "Upload package" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Run" }));
+    const packageInput = screen.getByLabelText("Package") as HTMLInputElement;
+    await user.upload(packageInput, zip("bells.jar"));
+    fireEvent.change(packageInput, { target: { files: [] } });
+    await user.upload(packageInput, zip("bells.jar"));
+    await user.click(screen.getByRole("button", { name: "Run upload" }));
+    expect(dialog).toBeTruthy();
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Upload package" })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Run" })).toBeNull());
+  });
+
+  it("asks again when the saved mod no longer exists", async () => {
+    const user = userEvent.setup();
+    const mod = createMod("Lanterns");
+    mod.autoZip = true;
+    const named = deploymentFrom({
+      id: "named",
+      modId: "missing",
+      mod: mod.name,
+      version: "",
+      notes: "",
+      when: "2026-02-02T15:04:00.000Z",
+      results: [{ id: "nexus", status: "error", message: "no" }],
+    });
+    const saved = deploymentFrom({
+      id: "gone",
+      modId: "missing",
+      mod: "Gone",
+      version: "",
+      notes: "",
+      when: "2026-01-02T15:04:00.000Z",
+      results: [{ id: "nexus", status: "error", message: "no" }],
+    });
+    render(<Studio transport={async () => ({ ok: false, message: "no" })} />);
+    await user.upload(
+      screen.getByLabelText("Import file"),
+      new File([JSON.stringify(libraryFile([mod], [named, saved].filter(Boolean) as NonNullable<typeof saved>[]))], "omnimod.json"),
+    );
+    await user.click(screen.getByRole("button", { name: "Deployments" }));
+    await user.click(screen.getByRole("button", { name: "Expand named" }));
+    await user.click(screen.getByRole("button", { name: "Rerun Nexus Mods" }));
+    await user.click(screen.getByRole("button", { name: "Run" }));
+    expect(screen.getByText("Lanterns needs the package again.")).toBeTruthy();
+    const packageInput = screen.getByLabelText("Package") as HTMLInputElement;
+    await user.upload(packageInput, zip("bells.jar"));
+    fireEvent.change(packageInput, { target: { files: [] } });
+    fireEvent.submit(screen.getByRole("dialog", { name: "Upload package" }));
+    expect(screen.getByRole("dialog", { name: "Upload package" })).toBeTruthy();
+    await user.upload(packageInput, zip("notes.zip"));
+    await user.click(screen.getByRole("button", { name: "Run upload" }));
+    await waitFor(() => expect(screen.queryByLabelText("Upload progress")).toBeNull());
+    await user.click(screen.getByRole("button", { name: "Expand gone" }));
+    await user.click(screen.getByRole("button", { name: "Rerun Nexus Mods" }));
+    await user.click(screen.getByRole("button", { name: "Run" }));
+    await user.click(screen.getByRole("checkbox", { name: "Select gone" }));
+    await user.click(screen.getByRole("button", { name: "Delete selected" }));
+    expect(screen.getByRole("dialog", { name: "Upload package" })).toBeTruthy();
+    await user.upload(screen.getByLabelText("Package"), zip("bells.zip"));
+    await user.click(screen.getByRole("button", { name: "Run upload" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Upload package" })).toBeNull());
+    expect(screen.queryByText("Gone")).toBeNull();
+  });
+
+  it("keeps a failed retry, then reruns the latest failure from the table", async () => {
+    const user = userEvent.setup();
+    let curse = 0;
+    const transport: Transport = async (id) => {
+      if (id !== "curseforge") return { ok: true };
+      curse += 1;
+      if (curse < 4) return { ok: false, message: curse === 1 ? "no" : "still" };
+      return { ok: true, url: "https://edge.forgecdn.net/files/1/test.zip" };
+    };
+    render(<Studio transport={transport} />);
+    await addMod(user, "Lanterns");
+    await user.click(screen.getByRole("button", { name: /Hosts/ }));
+    await user.click(screen.getByRole("button", { name: /Nexus Mods/ }));
+    await typeField(user, "API key", "secret");
+    await typeField(user, "Game domain", "site");
+    await typeField(user, "Mod ID", "1");
+    await user.click(screen.getByRole("button", { name: /CurseForge/ }));
+    await typeField(user, "Project ID", "1744552");
+    await typeField(user, "Game versions", "26.2");
+    await user.click(screen.getByRole("button", { name: /Hosts/ }));
+    const upload = () => user.upload(document.querySelector('input[type="file"]:not([aria-label="Import file"])') as HTMLInputElement, zip("test-mod.zip"));
+    await upload();
+    const version = screen.getByRole("textbox", { name: "Version *" });
+    await user.clear(version);
+    await user.type(version, "0.0.5");
+    await user.type(screen.getByRole("textbox", { name: "Changelog *" }), "Softer glass.");
+    await user.click(screen.getByRole("button", { name: /Publish to/ }));
+    await user.click(screen.getByRole("button", { name: "Show Failed" }));
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByText("still")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Back to package" }));
+    await upload();
+    await user.type(screen.getByRole("textbox", { name: "Changelog *" }), "Again.");
+    await user.click(screen.getByRole("button", { name: /Publish to/ }));
+    await user.click(screen.getByRole("button", { name: "Deployments" }));
+    const open = screen.getAllByRole("button", { name: /^Expand / });
+    await user.click(open[1]!);
+    await user.click(screen.getByRole("button", { name: "Rerun CurseForge" }));
+    await user.click(screen.getByRole("button", { name: "Run" }));
+    expect(screen.getByRole("dialog", { name: "Upload package" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog", { name: "Upload package" })).toBeNull();
+    await user.click(screen.getAllByRole("button", { name: /^Expand / })[0]!);
+    await user.click(screen.getByRole("button", { name: "Rerun CurseForge" }));
+    await user.click(screen.getByRole("button", { name: "Run" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Run" })).toBeNull());
+    const openRow = screen.getByRole("button", { name: /^Collapse /, expanded: true }).parentElement!;
+    await user.click(openRow.querySelector("input")!);
+    await user.click(screen.getByRole("button", { name: "Delete selected" }));
+    expect(screen.getByRole("button", { name: "Deployments" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /^Expand / }));
+    const lastRow = screen.getByRole("button", { name: /^Collapse /, expanded: true }).parentElement!;
+    await user.click(lastRow.querySelector("input")!);
+    await user.click(screen.getByRole("button", { name: "Delete selected" }));
+    expect(screen.queryByRole("button", { name: "Deployments" })).toBeNull();
+  });
+
+  it("adds a retried host that did not send a link", async () => {
+    const user = userEvent.setup();
+    let attempt = 0;
+    const transport: Transport = async () => {
+      attempt += 1;
+      if (attempt === 1) return { ok: false, message: "no" };
+      return { ok: true };
+    };
+    render(<Studio transport={transport} />);
+    await addMod(user, "Lanterns");
+    await user.click(screen.getByRole("button", { name: /Hosts/ }));
+    await user.click(screen.getByRole("button", { name: /Modrinth/ }));
+    await typeField(user, "Personal access token", "secret");
+    await typeField(user, "Project ID or slug", "lanterns");
+    await typeField(user, "Game versions", "1.20.1");
+    await typeField(user, "Loaders", "fabric");
+    await user.click(screen.getByRole("button", { name: /Hosts/ }));
+    await user.upload(document.querySelector('input[type="file"]') as HTMLInputElement, zip("notes.jar"));
+    const version = screen.getByRole("textbox", { name: "Version *" });
+    await user.clear(version);
+    await user.type(version, "0.0.4");
+    await user.type(screen.getByRole("textbox", { name: "Changelog *" }), "Quiet.");
+    await user.click(screen.getByRole("button", { name: /Publish to/ }));
+    await user.click(screen.getByRole("button", { name: "Back to package" }));
+    await user.click(screen.getByRole("button", { name: "Deployments" }));
+    await user.click(screen.getByRole("button", { name: /^Expand / }));
+    await user.click(screen.getByRole("button", { name: "Rerun Modrinth" }));
+    await user.click(screen.getByRole("button", { name: "Run" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Run" })).toBeNull());
   });
 });

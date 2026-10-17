@@ -6,6 +6,7 @@ import {
   type ConfigMap,
   type PlatformId,
 } from "./catalog.ts";
+import type { Deployment } from "./history.ts";
 
 export type TargetMap = Record<PlatformId, Record<string, string>>;
 
@@ -84,7 +85,7 @@ export function readHostFile(value: unknown): ConfigMap | null {
   return normalizeConfigs(raw.configs as Partial<ConfigMap>);
 }
 
-export function libraryFile(mods: ModRecord[]) {
+export function libraryFile(mods: ModRecord[], deployments: Deployment[] = []) {
   return {
     kind: "omnimod-library" as const,
     mods: mods.map((mod) => ({
@@ -99,6 +100,7 @@ export function libraryFile(mods: ModRecord[]) {
       curseforgeOverride: mod.curseforgeOverride,
       configs: normalizeConfigs(mod.configs),
     })),
+    deployments,
   };
 }
 

@@ -7,6 +7,7 @@ import {
   defaultConfigs,
   fieldValue,
   fileExtension,
+  heldPackageError,
   hostLimitDetail,
   hostMuted,
   isConfigured,
@@ -266,7 +267,8 @@ describe("catalog", () => {
     assert.equal(packed.ok && packed.fileName, "mod.jar, notes.txt");
     const jars = uploadRule(jarHost);
     const already = acceptFiles([{ name: "mod.zip", size: 4 }], jars, "", true);
-    assert.equal(already.ok && already.fileName, "mod.zip");
+    assert.equal(already.ok, false);
+    assert.match(already.ok ? "" : already.message, /not a jar from a zip/);
     const rejected = acceptFiles([{ name: "notes.txt", size: 4 }], jars, "", true);
     assert.equal(rejected.ok, false);
     const open = acceptFiles([{ name: "notes.txt", size: 4 }], { ...jars, extensions: null }, "", true);
@@ -278,6 +280,57 @@ describe("catalog", () => {
       fields: Object.fromEntries(platformById("thunderstore").fields.map((field) => [field.key, "set"])),
     };
     const clashPacked = acceptFiles([{ name: "notes.txt", size: 4 }], uploadRule(clash), "", true);
-    assert.equal(clashPacked.ok && clashPacked.fileName, "notes.txt");
+    assert.equal(clashPacked.ok, false);
+    const bridged = uploadRule(clash, "", true);
+    assert.deepEqual(bridged.extensions, [".jar"]);
+    assert.equal(bridged.hosts, 2);
+    assert.equal(bridged.multiple, false);
+    const jarOnly = acceptFiles([{ name: "mod.jar", size: 4 }], bridged, "1.0.0", true);
+    assert.equal(jarOnly.ok && jarOnly.fileName, "mod.jar");
+    const zipNo = acceptFiles([{ name: "mod.zip", size: 4 }], bridged, "", true);
+    assert.equal(zipNo.ok, false);
+    assert.match(zipNo.ok ? "" : zipNo.message, /not a jar from a zip/);
+    const two = acceptFiles(
+      [
+        { name: "a.jar", size: 4 },
+        { name: "b.jar", size: 4 },
+      ],
+      bridged,
+      "",
+      true,
+    );
+    assert.equal(two.ok, false);
+    assert.match(two.ok ? "" : two.message, /One jar/);
+    assert.equal(uploadRule(jarHost, "", true).multiple, true);
+    assert.deepEqual(uploadRule(jarHost, "", true).extensions, [".jar"]);
+    const githubOnly = defaultConfigs();
+    githubOnly.github = {
+      enabled: true,
+      fields: Object.fromEntries(platformById("github").fields.map((field) => [field.key, "set"])),
+    };
+    assert.equal(uploadRule(githubOnly, "", true).extensions, null);
+    const withGithub = defaultConfigs();
+    withGithub.github = githubOnly.github;
+    withGithub.modrinth = jarHost.modrinth;
+    assert.deepEqual(uploadRule(withGithub, "", true).extensions, [".jar"]);
+    assert.equal(uploadRule(withGithub, "", true).multiple, true);
+    const botJar = defaultConfigs();
+    botJar.modrinth = jarHost.modrinth;
+    botJar.curseforge = { enabled: true, fields: { projectId: "9", gameVersions: "17045" } };
+    assert.equal(uploadRule(botJar, "", true).multiple, false);
+    const half = defaultConfigs();
+    half.modrinth = jarHost.modrinth;
+    half.nexus = { enabled: true, fields: { apiKey: "" } };
+    assert.deepEqual(uploadRule(half, "", true).extensions, [".jar"]);
+    const quiet = defaultConfigs();
+    quiet.modrinth = jarHost.modrinth;
+    quiet.nexus = { enabled: false, fields: { apiKey: "set", gameDomain: "set", modId: "set" } };
+    assert.deepEqual(uploadRule(quiet, "", true).extensions, [".jar"]);
+    assert.equal(heldPackageError("", bridged, "", true), "");
+    assert.equal(heldPackageError("mod.jar", bridged, "", false), "");
+    assert.equal(heldPackageError("mod.jar", { ...bridged, extensions: null }, "", true), "");
+    assert.equal(heldPackageError("mod.jar", { ...bridged, extensions: [] }, "", true), "");
+    assert.equal(heldPackageError("mod.jar", bridged, "", true), "");
+    assert.match(heldPackageError("mod.zip", bridged, "", true), /not a jar from a zip/);
   });
 });

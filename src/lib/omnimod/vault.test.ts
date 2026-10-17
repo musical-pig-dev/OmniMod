@@ -34,6 +34,13 @@ describe("vault", () => {
     assert.equal(readPayload({ mods: [] })?.activeId, "");
     assert.equal(readPayload({ mods: [mod], activeId: mod.id })?.activeId, mod.id);
     assert.equal(readPayload({ mods: [mod], activeId: 4 })?.activeId, mod.id);
+    assert.equal(readPayload({ mods: [mod], activeId: mod.id, deployments: "no" })?.deployments.length, 0);
+    const withDeploy = readPayload({
+      mods: [mod],
+      activeId: mod.id,
+      deployments: [{ id: "d1", mod: "Lanterns", hosts: [{ id: "nexus", status: "error", name: "Nexus Mods" }] }],
+    });
+    assert.equal(withDeploy?.deployments[0]?.id, "d1");
     assert.equal(await openVault(secret, JSON.stringify({ v: 1, data: "aa" })), null);
     assert.equal(await openVault(secret, JSON.stringify({ v: 1, iv: "aa" })), null);
     assert.equal(sealedRecord(null), false);
