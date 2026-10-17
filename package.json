@@ -10,7 +10,8 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "lint": "eslint .",
-    "dev:sample": "VITE_OMNIMOD_SAMPLE=1 vite --config vite.chrome.config.ts"
+    "dev:sample": "VITE_OMNIMOD_SAMPLE=1 vite --config vite.chrome.config.ts",
+    "check": "node scripts/check.mjs"
   },
   "dependencies": {
     "@tanstack/react-router": "1.131.50",
