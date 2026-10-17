@@ -42,7 +42,10 @@ That writes `dist/chrome` and `omnimod-chrome.zip`.
 ```bash
 npm test
 npm run lint
+npm run check
 ```
+
+`npm run check` runs lint and the coverage tests. When both pass it prints `lint and coverage passed on <branch>`. Put a screenshot of that line on a pull request. It does not print folders.
 
 Pull requests run lint on its own, then the tests. A push to main still lints before the extension is published, even when the tests are skipped.
 
