@@ -49,6 +49,10 @@ npm run check
 
 Pull requests run lint on its own, then the tests. A push to main still lints before the extension is published, even when the tests are skipped.
 
+The source manifest stays on the last published version. A push to main looks for the next free patch and writes that version into the built extension. It does not jump from `0.1.x` to `1.x`. Leave the source version on the last release.
+
+The extension asks for access to every HTTPS site. Nexus and Thunderstore return upload addresses on storage hosts that are not known ahead of time. The named hosts cover the APIs. The broad entry is only for those upload addresses.
+
 ## Set up a host
 
 1. Open Hosts.
