@@ -676,14 +676,14 @@ function CurseForgeOverride({
   );
 }
 
-export type ReleaseNote = {
+type ReleaseNote = {
   name: string;
   version: string;
   notes: string;
   links: { host: string; url: string }[];
 };
 
-export function releasePost(note: ReleaseNote): string {
+function releasePost(note: ReleaseNote): string {
   const name = note.name.trim() || "Untitled mod";
   const version = note.version.trim();
   const notes = note.notes.trim();
