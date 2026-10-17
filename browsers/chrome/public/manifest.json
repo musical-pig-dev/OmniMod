@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "OmniMod",
-  "version": "0.1.0",
+  "version": "1.0.1",
   "description": "Publish one mod package to every host that already has an account.",
   "action": {
     "default_title": "Open OmniMod"
@@ -23,6 +23,7 @@
     "https://api.github.com/*",
     "https://uploads.github.com/*",
     "https://thunderstore.io/*",
-    "https://*/*"
+    "https://gcdn.thunderstore.io/*",
+    "https://*.amazonaws.com/*"
   ]
 }

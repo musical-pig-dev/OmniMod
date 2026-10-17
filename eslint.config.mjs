@@ -30,7 +30,7 @@ const hostKeyRule = {
   },
 };
 
-/** Flat ESLint config for the TanStack Start app-builder template. */
+/** Flat ESLint config for the OmniMod extension. */
 export default tseslint.config(
   {
     ignores: [
